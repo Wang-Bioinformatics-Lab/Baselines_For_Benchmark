@@ -1,0 +1,8 @@
+pandas
+vaex
+xmltodict
+pymzml
+plotnine
+pyteomics
+requests
+plotly
