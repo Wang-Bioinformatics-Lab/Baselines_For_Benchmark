@@ -1,4 +1,4 @@
-## Wang Bioinformatics Lab Data Science Template
+## Wang Bioinformatics Lab Deep Learning Template
 
 Here we are able to launch a notebook inside of docker with all the dependencies you would want. 
 
