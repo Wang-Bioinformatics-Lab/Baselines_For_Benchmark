@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: wanglab-jupyter-tf-template
+    container_name: wanglab-jupyter-pytorch-template
     volumes:
       - .:/home/jovyan/work:rw
     ports:
@@ -14,8 +14,12 @@ services:
     command: jupyter lab --ip='*' --port=9000 --no-browser --NotebookApp.token='${LOGINPASSWORD:-PASSWORD}' --allow-root
     deploy:
      resources:
-       limits:
-         memory: 16000M
+      reservations:
+        devices:
+          - driver: nvidia
+            capabilities: [gpu]
+      limits:
+        memory: 16000M
     environment:
       VIRTUAL_HOST: jupytertemplate.wanglab.science
       VIRTUAL_PORT: 9000

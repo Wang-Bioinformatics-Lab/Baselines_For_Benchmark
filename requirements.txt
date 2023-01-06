@@ -6,4 +6,5 @@ plotnine
 pyteomics
 requests
 plotly
-pytorch
+torch
+torch-vision
