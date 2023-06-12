@@ -1,1 +1,0 @@
-python3 "/mnist_test/mnist.py" --log-interval 10000
