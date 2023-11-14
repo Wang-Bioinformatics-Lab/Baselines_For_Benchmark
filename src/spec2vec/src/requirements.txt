@@ -1,0 +1,10 @@
+gensim
+pandas
+numpy
+vaex
+tqdm
+joblib
+matchms
+spec2vec
+rdkit
+torch
