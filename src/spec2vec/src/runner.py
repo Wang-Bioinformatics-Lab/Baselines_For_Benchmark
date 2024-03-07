@@ -58,7 +58,7 @@ def spectrum_document_generator_mgf(spectra_path, metadata_path, spectrum_ids,ou
     for idx, spectrum in enumerate(spectra):
         id = spectrum['params']['title']
         metadata = metadata_df[metadata_df.spectrum_id == id]
-        prec_mz = spectrum['params']['pepmass'][0]
+        prec_mz = spectrum['params']['precursor_mz'][0]
         
         # Precleaining
         ordered_indices = np.argsort(spectrum['m/z array'])
@@ -127,7 +127,7 @@ def process(train_spectra_path,
             train_spectrum_doc_path= "./spectrum_documents/", 
             test_spectrum_doc_path="./spectrum_documents_test/" ,
             train_embedded_path="./embedded_spectra/", 
-            test_embedded_path="./embedded_spectra/", 
+            test_embedded_path="./embedded_spectra_test/", 
             withold_test=True):
     
     train_spectrum_doc_path = train_spectrum_doc_path + train_spectra_path.split('/')[-1].rsplit('.',1)[0] + '/'
@@ -177,7 +177,8 @@ def process(train_spectra_path,
                 # If this is going to be used in downstream applications, we may want to train over all of the data
                 docs = all_docs
             
-            model = train_new_word2vec_model(docs, iterations=50, vector_size=300, window=500, workers=8, learning_rate_initial=0.025, learning_rate_decay=0.00025, negative=5, sg=0, progress_logger=True)
+            model = train_new_word2vec_model(docs, filename=language_embedding_model, iterations=50, vector_size=300, window=500, workers=8, learning_rate_initial=0.025, learning_rate_decay=0.00025, negative=5, sg=0, progress_logger=True)
+            
             # model = gensim.models.Word2Vec(min_count=1, vector_size=512, window=500, workers=int(num_cpus), epochs=50)
             # model.build_vocab(all_docs)    # Includes test
             # model.train(tqdm(docs), total_examples=model.corpus_count, epochs=model.epochs)   # Does not include test
@@ -221,6 +222,7 @@ def main():
     parser.add_argument('--test_metadata', type=str, default=None)
     
     parser.add_argument('--model_save_name', type=str, default="./word2vec.model")
+    parser.add_argument('--save_path', type=str)
     parser.add_argument('--num_cpus', type=int, default=1)
     # parser.add_argument('--test', action='store_true')
     parser.add_argument('--withold_test', type=bool, default=False)
@@ -231,8 +233,26 @@ def main():
     test_spectra             = args.test_spectra
     test_metadata            = args.test_metadata
     language_embedding_model = args.model_save_name
+    
+    language_embedding_model_dir = os.path.dirname(language_embedding_model)
+    if not os.path.isdir(language_embedding_model_dir):
+        os.makedirs(language_embedding_model_dir, exist_ok=True)
+    
     global num_cpus
     num_cpus = args.num_cpus
+    
+    train_spectrum_doc_path= "./spectrum_documents/"
+    test_spectrum_doc_path="./spectrum_documents_test/" 
+    train_embedded_path="./embedded_spectra/"
+    test_embedded_path="./embedded_spectra_test/"
+    
+    if args.save_path:
+        if not os.path.isdir(args.save_path):
+            os.makedirs(args.save_path, exist_ok=True)
+        train_spectrum_doc_path= os.path.join(args.save_path, train_spectrum_doc_path)
+        test_spectrum_doc_path= os.path.join(args.save_path, test_spectrum_doc_path)
+        train_embedded_path= os.path.join(args.save_path, train_embedded_path)
+        test_embedded_path= os.path.join(args.save_path, test_embedded_path)
 
     process(train_spectra, 
             train_metadata, 
@@ -240,7 +260,11 @@ def main():
             test_metadata,
             language_embedding_model,
             False,
-            withold_test=args.withold_test)
+            withold_test=args.withold_test,
+            train_spectrum_doc_path=train_spectrum_doc_path, 
+            test_spectrum_doc_path=test_spectrum_doc_path,
+            train_embedded_path=train_embedded_path, 
+            test_embedded_path=test_embedded_path)
     
     # This is currently deprecated, everything can now be specified by the presence (or lack thereof) of training/test paths.
     # If it's not present, it gets skipped.

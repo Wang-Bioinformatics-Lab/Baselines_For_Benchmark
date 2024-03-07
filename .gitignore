@@ -1,0 +1,8 @@
+src/ms2deepscore/conda_env/
+src/spec2vec/src/conda_env
+src/spec2vec/src/spectral_similarity/*
+src/spec2vec/src/structural_similarity/*
+src/spec2vec/src/structural_similarity_positive/*
+src/spec2vec/src/spec2vec_models/
+data/structural_similarity/*
+data/old
