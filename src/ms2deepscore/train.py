@@ -1,5 +1,6 @@
 import argparse
 import os
+from datetime import datetime
 
 from matplotlib import pyplot as plt
 import pandas as pd
@@ -24,7 +25,7 @@ def main():
     parser.add_argument('--tanimoto_path', type=str, help='Path to the tanimoto scores')
     parser.add_argument('--save_dir', type=str, help='Path to the save directory')
     args = parser.parse_args()
-    
+        
     if not os.path.isdir(args.save_dir):
         os.makedirs(args.save_dir, exist_ok=True)
     
@@ -75,11 +76,17 @@ def main():
     history = model.model.fit(training_generator, validation_data=validation_generator,
                             epochs=150, verbose=1, callbacks=[earlystopper_scoring_net])
 
-    model_file_name = os.path.join(args.save_dir, "model.hdf5")
+    # history = model.model.fit(training_generator, validation_data=validation_generator,
+    #                         epochs=50, verbose=1)
+
+    # Get current time in dd_mm_yyyy_hh_mm_ss format
+    current_time = datetime.now().strftime("%d_%m_%Y_%H_%M_%S")   
+
+    model_file_name = os.path.join(args.save_dir, f"model_{current_time}.hdf5")
     model.save(model_file_name)
 
     # Save history to pickle
-    pickle.dump(history.history, open(os.path.join(args.save_dir, "model_history.pkl"), "wb"))
+    pickle.dump(history.history, open(os.path.join(args.save_dir, f"model_{current_time}_history.pkl"), "wb"))
 
     plt.plot(history.history['loss'])
     plt.plot(history.history['val_loss'])

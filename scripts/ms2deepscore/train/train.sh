@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 eval "$(command conda 'shell.bash' 'hook' 2> /dev/null)"
 
-BIN_DIR="../../../../src/ms2deepscore/"
+BIN_DIR="../../../src/ms2deepscore/"
 
-SIMILARITY_MODE="structural"
-SIMILARITY_THRESHOLD="0.6"
+SIMILARITY_MODE="$1"
+SIMILARITY_THRESHOLD="$2"
 
 conda activate "$BIN_DIR/conda_env"
 

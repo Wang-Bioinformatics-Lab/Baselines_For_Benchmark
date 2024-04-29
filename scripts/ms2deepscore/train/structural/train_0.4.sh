@@ -4,7 +4,7 @@ eval "$(command conda 'shell.bash' 'hook' 2> /dev/null)"
 BIN_DIR="../../../../src/ms2deepscore/"
 
 SIMILARITY_MODE="structural"
-SIMILARITY_THRESHOLD="0.6"
+SIMILARITY_THRESHOLD="0.4"
 
 conda activate "$BIN_DIR/conda_env"
 

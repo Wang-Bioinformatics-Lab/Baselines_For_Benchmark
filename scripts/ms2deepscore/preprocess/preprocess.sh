@@ -3,10 +3,10 @@ eval "$(command conda 'shell.bash' 'hook' 2> /dev/null)"
 
 POSITIVE_DATA_DIR="../../data/structural_similarity_positive/"
 DATA_DIR="../../data/structural_similarity/"
-BIN_DIR="../../../../src/ms2deepscore/"
+BIN_DIR="../../../src/ms2deepscore/"
 
-SIMILARITY_THRESHOLD="0.9"
-SPLIT_STYLE="structural"
+SPLIT_STYLE="$1"
+SIMILARITY_THRESHOLD="$2"
 
 conda activate "$BIN_DIR/conda_env"
 

@@ -5,15 +5,10 @@ import argparse
 import matchms
 from matchms.importing.load_from_msp import parse_msp_file
 from matchms.importing import load_from_mgf, load_from_msp
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras.callbacks import (EarlyStopping, ModelCheckpoint)
-from tensorflow.keras.optimizers import Adam
 import pandas as pd
 import numpy as np
 from joblib import Parallel, delayed
 from tqdm import tqdm
-import sys
 
 from ms2deepscore import SpectrumBinner
 from ms2deepscore.data_generators import DataGeneratorAllInchikeys
@@ -30,18 +25,13 @@ from matchms.filtering import select_by_relative_intensity
 
 from matchms.filtering.metadata_processing.repair_not_matching_annotation import repair_not_matching_annotation
 from matchms.filtering.metadata_processing.derive_inchi_from_smiles import derive_inchi_from_smiles
-from matchms.filtering.metadata_processing.derive_inchi_from_smiles  import derive_inchi_from_smiles
 from matchms.filtering.metadata_processing.derive_inchikey_from_inchi import derive_inchikey_from_inchi
 from matchms.filtering.filter_utils.smile_inchi_inchikey_conversions import is_valid_inchikey
 from matchms.filtering.metadata_processing.harmonize_undefined_inchikey import harmonize_undefined_inchikey
 from matchms.filtering.metadata_processing.harmonize_undefined_inchi import harmonize_undefined_inchi
 from matchms.filtering.metadata_processing.harmonize_undefined_smiles import harmonize_undefined_smiles
-from matchms.filtering.metadata_processing.repair_inchi_inchikey_smiles import repair_inchi_inchikey_smiles
 
 from matchms.similarity import FingerprintSimilarity
-
-import tensorflow as tf
-print("Is GPU Available:", tf.test.is_gpu_available())
 
 def load_spectrums(path):
     """Load spectrums from path"""
@@ -57,7 +47,7 @@ def inject_metadata(path, spectra):
     df = pd.read_csv(path)
     
     # We want to get the following columns: Smiles,INCHI,InChIKey_smiles
-    df = df[["spectrum_id","Smiles", "INCHI", "InChIKey_smiles"]]
+    df = df[["spectrum_id","Smiles", "INCHI", "InChIKey_smiles", "collision_energy"]]
     for spectrum in spectra:
         spectrum_id = spectrum.metadata.get("title")
         row = df.loc[df['spectrum_id'] == spectrum_id]
@@ -66,6 +56,7 @@ def inject_metadata(path, spectra):
         smiles = row["Smiles"].values[0]
         inchi = row["INCHI"].values[0]
         inchikey = row["InChIKey_smiles"].values[0]
+        collision_energy = row["collision_energy"].values[0]
         
         # if not isinstance(smiles, str):
         #     print("Smiles is not a string", smiles)
@@ -82,6 +73,8 @@ def inject_metadata(path, spectra):
             spectrum.set("inchi", inchi)
         if inchikey is not None:
             spectrum.set("inchikey", inchikey)
+        if collision_energy is not None:
+            spectrum.set("collision_energy", collision_energy)
     
     return spectra
 
@@ -232,6 +225,8 @@ def main():
     # Must get all inchikeys sims first!
     print("Calculating representative spectra")
     spectrums_represent = {s.get('inchikey')[:14]: s for s in spectrums_pos_processing}
+    
+    
     # Test data will share tanimoto
     # Checking for overlap, turns out there will be overlap with spectral similarity
     overlaping_inchis = []
@@ -252,15 +247,17 @@ def main():
     train_val_spectra = list(spectrums_represent.values())
     print(f"Found {len(train_val_spectra)} unique train inchikeys")
     test_inchis = list(test_mapping.keys())
-    test_spectra = list(test_mapping.values())
+    test_spectra_deduplicated_structures = list(test_mapping.values())
     print(f"Found {len(test_inchis)} unique test inchikeys")
 
     similarity_measure = FingerprintSimilarity(similarity_measure="jaccard")
-    scores_mol_similarity = similarity_measure.matrix(train_val_spectra, train_val_spectra)
-    train_tanimoto_df = pd.DataFrame(scores_mol_similarity, columns=train_val_inchis, index=train_val_inchis)
+    scores_mol_similarity_train = similarity_measure.matrix(train_val_spectra, train_val_spectra)
+    train_tanimoto_df = pd.DataFrame(scores_mol_similarity_train, columns=train_val_inchis, index=train_val_inchis)
+    del scores_mol_similarity_train
     
-    scores_mol_similarity = similarity_measure.matrix(test_spectra, test_spectra)
-    test_tanimoto_df  = pd.DataFrame(scores_mol_similarity, columns=test_inchis, index=test_inchis)
+    scores_mol_similarity_test = similarity_measure.matrix(test_spectra_deduplicated_structures, test_spectra_deduplicated_structures)
+    test_tanimoto_df  = pd.DataFrame(scores_mol_similarity_test, columns=test_inchis, index=test_inchis)
+    del scores_mol_similarity_test
 
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir, exist_ok=True)
@@ -270,8 +267,9 @@ def main():
     test_tanimoto_df.to_csv(test_tanimoto_df_output_path)
     
     # Calculate train-test similarity matrices
-    scores_mol_similarity = similarity_measure.matrix(train_val_spectra, test_spectra)
-    train_test_tanimoto_df = pd.DataFrame(scores_mol_similarity, columns=test_inchis, index=train_val_inchis)
+    scores_mol_similarity_train_test = similarity_measure.matrix(train_val_spectra, test_spectra_deduplicated_structures)
+    train_test_tanimoto_df = pd.DataFrame(scores_mol_similarity_train_test, columns=test_inchis, index=train_val_inchis)
+    del scores_mol_similarity_train_test
     train_test_tanimoto_df_output_path = os.path.join(args.save_dir, "train_test_tanimoto_df.csv")
     train_test_tanimoto_df.to_csv(train_test_tanimoto_df_output_path)
     del train_test_tanimoto_df
@@ -323,8 +321,7 @@ def main():
     #         assert inchi in known_test_inchis, f"Found overlap for ID {inchi}"
     
 
-    spectrums_test = test_spectra #[s for s in spectrums_pos_processing if s.get("inchikey")[:14] in inchikeys14_test]
-    print(f"{len(spectrums_test)} spectrums in test data.")
+    print(f"{len(test_spectra)} spectrums in test data.")
 
     spectrums_wo_test = spectrums_training + spectrums_val
     print(f"{len(spectrums_wo_test)} spectrums in data w/o test")
@@ -344,16 +341,15 @@ def main():
     pickle.dump(spectrums_val, 
                 open(os.path.join(data_save_path,'ALL_GNPS_positive_val_split.pickle'), "wb"))
 
-    pickle.dump(spectrums_test, 
-                open(os.path.join(data_save_path,'ALL_GNPS_positive_test_split_01082024.pickle'), "wb"))
+    pickle.dump(test_spectra, 
+                open(os.path.join(data_save_path,'ALL_GNPS_positive_test_split.pickle'), "wb"))
+    
+    pickle.dump(test_spectra_deduplicated_structures,
+                open(os.path.join(data_save_path, 'ALL_GNPS_positive_test_deduplicated_structures.pickle'), "wb"))
     print("/tDone")
 
 
     
     
 if __name__=="__main__":
-    raise DeprecationWarning("This script is deprecated. Please use the new script in shared")
-    sys.exit(1)
     main()
-
-

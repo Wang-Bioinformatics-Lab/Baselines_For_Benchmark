@@ -1,0 +1,15 @@
+channels:
+    - conda-forge
+    - defaults
+dependencies:
+    - python
+    - gensim
+    - pandas
+    - numpy
+    - tqdm
+    - joblib
+    - bioconda::matchms
+    - bioconda::spec2vec
+    - rdkit
+    - pytorch
+    - scikit-learn
