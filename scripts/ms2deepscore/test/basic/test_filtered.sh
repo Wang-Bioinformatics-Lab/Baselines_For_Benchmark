@@ -4,7 +4,7 @@ eval "$(command conda 'shell.bash' 'hook' 2> /dev/null)"
 BIN_DIR="../../../../src/ms2deepscore/"
 
 DATA_DIR="/data/nas-gpu/SourceCode/michael_s/Baselines_For_Benchmark/data/structural_similarity/processed"
-PAIRS_PATH=$DATA_DIR"/pairs_testing_test_filtered.csv"
+PAIRS_PATH=$DATA_DIR"/pairs_test_filtered.feather"
 
 SIMILARITY_MODE=$1
 SIMILARITY_THRESHOLD=$2
