@@ -26,6 +26,20 @@ from utils import train_test_similarity_dependent_losses, \
                     tanimoto_dependent_losses, \
                     train_test_similarity_heatmap, \
                     train_test_similarity_bar_plot
+                    
+plt.rcParams.update({
+    "text.usetex": False,
+    "font.size": 20,
+    "axes.titlesize": 20,
+    "axes.labelsize": 20,
+    "xtick.labelsize": 18, #
+    "ytick.labelsize": 18, #
+    "legend.fontsize": 18, #
+    "figure.titlesize": 20,
+    "legend.title_fontsize": 20, #
+    "figure.autolayout": True,
+    "figure.dpi": 300,
+    })
 
 def main():
     parser = argparse.ArgumentParser(description='Test MS2DeepScore on the original data')
@@ -102,7 +116,7 @@ def main():
                 inchikey_idx_test[i] = np.where(tanimoto_df.index.values == spec.get("inchikey")[:14])[0].item()
             except ValueError as value_error:
                 if not spec.get("inchikey")[:14] in tanimoto_df.index.values:
-                    raise ValueError (f"InChI Key '{spec.get('inchikey')[:14]}' is not found in the provided strucutral similarity matrix.")
+                    raise ValueError (f"InChI Key '{spec.get('inchikey')[:14]}' is not found in the provided Stuctural similarity matrix.")
                 raise value_error
             try:
                 ordered_prediction_index[i] = np.where(predictions.index.values == spec.get("spectrum_id"))[0].item()
@@ -226,135 +240,164 @@ def main():
         # del pair_set, reverse_pair_set
         # gc.collect()
         
+        overall_rmse = np.sqrt(np.mean(np.square(predictions['error'].values)))
+        print("Overall RMSE (from evaluate()):", overall_rmse)
+        overall_mae =  np.mean(np.abs(predictions['error'].values))
 
-    ref_score_bins = np.linspace(0,1.0, 21)
-    # Train-Test Similarity Dependent Losses
-    similarity_dependent_metrics_mean = train_test_similarity_dependent_losses(predictions, train_test_similarities, ref_score_bins, mode='mean')
-    similarity_dependent_metrics_max = train_test_similarity_dependent_losses(predictions, train_test_similarities, ref_score_bins, mode='max')
-    train_test_grid = train_test_similarity_heatmap(predictions, train_test_similarities, ref_score_bins)
-    # Returns {'bin_content':bin_content_grid, 'bounds':bound_grid, 'rmses':rmse_grid, 'maes':mae_grid}
+        ref_score_bins = np.linspace(0.2,1.0, 17)
+        # Train-Test Similarity Dependent Losses
+        similarity_dependent_metrics_mean = train_test_similarity_dependent_losses(predictions, train_test_similarities, ref_score_bins, mode='mean')
+        similarity_dependent_metrics_max = train_test_similarity_dependent_losses(predictions, train_test_similarities, ref_score_bins, mode='max')
+        train_test_grid = train_test_similarity_heatmap(predictions, train_test_similarities, ref_score_bins)
+        # Returns {'bin_content':bin_content_grid, 'bounds':bound_grid, 'rmses':rmse_grid, 'maes':mae_grid}
+        
+        grid_fig_size = (10,10)
+        plt.figure(figsize=grid_fig_size)
+        plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
+        plt.imshow(train_test_grid['rmses'], vmin=0)
+        plt.colorbar()
+        
+        tick_labels = [f'({x[1][0]:.2f}, {x[1][1]:.2f})' for x in train_test_grid['bounds'][0]]
+        
+        plt.xticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels, rotation=90)
+        plt.yticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels,)
+        plt.xlabel("Max Test-Train Stuctural Similarity")
+        plt.ylabel("Max Test-Train Stuctural Similarity")
+        plt.savefig(os.path.join(metric_dir, 'heatmap.png'))
+        # Train-Test Similarity Dependent Counts
+        plt.figure(figsize=grid_fig_size)
+        plt.title('Train-Test Dependent Counts')
+        plt.imshow(train_test_grid['bin_content'], vmin=0)
+        plt.colorbar()
     
-    plt.figure()
-    plt.title('Train-Test Dependent RMSE')
-    plt.imshow(train_test_grid['rmses'], vmin=0)
-    plt.colorbar()
-       
-    tick_labels = [f'({x[1][0]:.2f}, {x[1][1]:.2f})' for x in train_test_grid['bounds'][0]]
-    
-    plt.xticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels, rotation=90)
-    plt.yticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels,)
-    plt.savefig(os.path.join(metric_dir, 'heatmap.png'), dpi=300, bbox_inches = "tight")
-    # Train-Test Similarity Dependent Counts
-    plt.figure()
-    plt.title('Train-Test Dependent Counts')
-    plt.imshow(train_test_grid['bin_content'], vmin=0)
-    plt.colorbar()
-   
-    plt.xticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels, rotation=90)
-    plt.yticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels,)
-    # If the number of samples in a bin is less than 30, put text in the bin
-    for i in range(len(train_test_grid['rmses'])):
-        for j in range(len(train_test_grid['rmses'])):
-            if train_test_grid['bin_content'][i,j] < 30 and not pd.isna(train_test_grid['bin_content'][i,j]):
-                plt.text(j, i, f'{train_test_grid["bin_content"][i,j]:.0f}', ha="center", va="center", color="white")
-    plt.savefig(os.path.join(metric_dir, 'heatmap_counts.png'), dpi=300, bbox_inches = "tight")
-    # Train-Test Similarity Dependent Nan-Counts
-    plt.figure()
-    plt.title('Train-Test Dependent Nan-Counts')
-    plt.imshow(train_test_grid['nan_count'], vmin=0)
-    plt.colorbar()
-    plt.xticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels, rotation=90)
-    plt.yticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels,)
-    plt.savefig(os.path.join(metric_dir, 'heatmap_nan_counts.png'), dpi=300, bbox_inches = "tight")
-    
-    # MS2DeepScore Tanimoto Dependent Losses Plot
-    ref_score_bins = np.linspace(0,1.0, 11)
+        plt.xticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels, rotation=90)
+        plt.yticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels,)
+        plt.xlabel("Max Test-Train Stuctural Similarity")
+        plt.ylabel("Max Test-Train Stuctural Similarity")
+        # If the number of samples in a bin is less than 30, put text in the bin
+        for i in range(len(train_test_grid['rmses'])):
+            for j in range(len(train_test_grid['rmses'])):
+                if train_test_grid['bin_content'][i,j] < 30 and not pd.isna(train_test_grid['bin_content'][i,j]):
+                    plt.text(j, i, f'{train_test_grid["bin_content"][i,j]:.0f}', ha="center", va="center", color="white")
 
-    tanimoto_dependent_dict = tanimoto_dependent_losses(predictions, ref_score_bins)
-    
-    rmse = np.sqrt(np.mean(np.square(predictions['error'].values)))
-    print("Overall RMSE (from evaluate()):", rmse)
-    mae =  np.mean(np.abs(predictions['error'].values))
-    
-    metric_dict = {}
-    metric_dict["bin_content"]      = tanimoto_dependent_dict["bin_content"]
-    metric_dict["nan_bin_content"]  = tanimoto_dependent_dict["nan_bin_content"]
-    metric_dict["bounds"]           = tanimoto_dependent_dict["bounds"]
-    metric_dict["rmses"]            = tanimoto_dependent_dict["rmses"]
-    metric_dict["maes"]             = tanimoto_dependent_dict["maes"]
-    metric_dict["rmse"] = rmse
-    metric_dict["mae"]  = mae
-    
-    # Save to pickle
-    metric_path = os.path.join(metric_dir, "metrics.pkl")
-    print(f"Saving metrics to {metric_path}")
-    pickle.dump(metric_dict, open(metric_path, "wb"))
-    train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_mean.pkl")
-    pickle.dump(similarity_dependent_metrics_mean, open(train_test_metric_path, "wb"))
-    train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_max.pkl")
-    pickle.dump(similarity_dependent_metrics_max, open(train_test_metric_path, "wb"))
-    train_test_metric_path = os.path.join(metric_dir, "train_test_grid.pkl")
-    pickle.dump(train_test_grid, open(train_test_metric_path, "wb"))
+        plt.savefig(os.path.join(metric_dir, 'heatmap_counts.png'))
+        # Train-Test Similarity Dependent Nan-Counts
+        plt.figure(figsize=grid_fig_size)
+        plt.title('Train-Test Dependent Nan-Counts')
+        plt.imshow(train_test_grid['nan_count'], vmin=0)
+        plt.colorbar()
+        plt.xticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels, rotation=90)
+        plt.yticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels,)
+        plt.savefig(os.path.join(metric_dir, 'heatmap_nan_counts.png'))
+        
+            
+        # Train-Test Similarity Dependent Losses Aggregated
+        plt.figure(figsize=(12, 9))
+        plt.bar(np.arange(len(similarity_dependent_metrics_max["rmses"]),), similarity_dependent_metrics_max["rmses"],)
+        plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
+        plt.xlabel("Max Test-Train Stuctural Similarity")
+        plt.ylabel("Max Test-Train Stuctural Similarity")
+        plt.ylabel("RMSE")
+        plt.xlabel("Tanimoto score bin")
+        plt.xticks(np.arange(len(similarity_dependent_metrics_max["rmses"])), [f"{a:.2f} to < {b:.2f}" for (a, b) in similarity_dependent_metrics_max["bounds"]], rotation='vertical')
+        plt.grid(True)
+        plt.savefig(os.path.join(metric_dir, 'train_test_rmse.png'))
+        
+        
+        # MS2DeepScore Tanimoto Dependent Losses Plot
+        ref_score_bins = np.linspace(0,1.0, 11)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(4, 5), dpi=120)
-    
-    ax1.plot(np.arange(len(metric_dict["rmses"])), metric_dict["rmses"], "o:", color="crimson")
-    ax1.set_title('RMSE')
-    ax1.set_ylabel("RMSE")
-    ax1.grid(True)
+        tanimoto_dependent_dict = tanimoto_dependent_losses(predictions, ref_score_bins)
 
-    ax2.plot(np.arange(len(metric_dict["rmses"])), metric_dict["bin_content"], "o:", color="teal")
-    ax2.plot(np.arange(len(metric_dict["rmses"])), metric_dict["nan_bin_content"], "o:", color="grey")
-    if sum(metric_dict["nan_bin_content"]) > 0:
-        ax2.legend(["# of valid spectrum pairs", "# of nan spectrum pairs"])
-    ax2.set_title('# of spectrum pairs')
-    ax2.set_ylabel("# of spectrum pairs")
-    ax2.set_xlabel("Tanimoto score bin")
-    plt.yscale('log')
-    plt.xticks(np.arange(len(metric_dict["rmses"])), [f"{a:.1f} to < {b:.1f}" for (a, b) in metric_dict["bounds"]], fontsize=9, rotation='vertical')
-    ax2.grid(True)
-    
-    # Save figure
-    fig_path = os.path.join(metric_dir, "metrics.png")
-    plt.savefig(fig_path, dpi=300, bbox_inches = "tight")
-    
-    # spec2vec_percentile_plot(predictions, scores_ref, metric_dir)
-    
-    # Train-Test Similarity Bar Plot
-    train_test_sim = train_test_similarity_bar_plot(predictions, train_test_similarities, ref_score_bins)
-    bin_content, bounds = train_test_sim['bin_content'], train_test_sim['bounds']
-    plt.figure(figsize=(20, 5))
-    plt.title("Number of Structures in Similarity Bins (Max Similarity to Train Set)")
-    plt.bar(range(len(bin_content)), bin_content, label='Number of Structures')
-    plt.xlabel('Similarity Bin (Max Similarity to Train Set)')
-    plt.ylabel('Number of Structures')
-    plt.xticks(range(len(bin_content)), [f"({bounds[i][0]:.2f}-{bounds[i][1]:.2f})" for i in range(len(bounds))], rotation=45)
-    plt.legend()
-    plt.savefig(os.path.join(metric_dir, 'train_test_similarity_bar_plot.png'), dpi=300, bbox_inches="tight")
-    
-    # Score, Tanimoto Scatter Plot
-    plt.figure(figsize=(10,10))
-    plt.scatter(predictions['score'], predictions['tanimoto'], alpha=0.2)
-    plt.xlabel('Predicted Spectral Similarity Score')
-    plt.ylabel('Tanimoto Score')
-    # Make square
-    plt.xlim(0, 1)
-    plt.ylim(0, 1)
-    plt.title('Predicted vs Reference Spectral Similarity Scores')
-    plt.savefig(os.path.join(metric_dir, 'predicted_vs_reference.png'), dpi=300)
-    
-    # Score, Tanimoto Scatter Plot (Hexbin)
-    plt.figure(figsize=(10,10))
-    hb = plt.hexbin(predictions['score'], predictions['tanimoto'], gridsize=50, cmap='inferno')
-    cb = plt.colorbar(hb)
-    cb.set_label('counts')
-    plt.xlabel('Predicted Spectral Similarity Score')
-    plt.ylabel('Tanimoto Score')
-    # Make square
-    plt.xlim(0, 1)
-    plt.ylim(0, 1)
-    plt.title('Predicted vs Reference Spectral Similarity Scores (Hexbin)')
-    plt.savefig(os.path.join(metric_dir, 'predicted_vs_reference_hexbin.png'), dpi=300)
+        
+        metric_dict = {}
+        metric_dict["bin_content"]      = tanimoto_dependent_dict["bin_content"]
+        metric_dict["nan_bin_content"]  = tanimoto_dependent_dict["nan_bin_content"]
+        metric_dict["bounds"]           = tanimoto_dependent_dict["bounds"]
+        metric_dict["rmses"]            = tanimoto_dependent_dict["rmses"]
+        metric_dict["maes"]             = tanimoto_dependent_dict["maes"]
+        metric_dict["rmse"] = overall_rmse
+        metric_dict["mae"]  = overall_mae
+        
+        # Save to pickle
+        metric_path = os.path.join(metric_dir, "metrics.pkl")
+        print(f"Saving metrics to {metric_path}")
+        pickle.dump(metric_dict, open(metric_path, "wb"))
+        train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_mean.pkl")
+        pickle.dump(similarity_dependent_metrics_mean, open(train_test_metric_path, "wb"))
+        train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_max.pkl")
+        pickle.dump(similarity_dependent_metrics_max, open(train_test_metric_path, "wb"))
+        train_test_metric_path = os.path.join(metric_dir, "train_test_grid.pkl")
+        pickle.dump(train_test_grid, open(train_test_metric_path, "wb"))
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(6, 8))
+        
+        ax1.plot(np.arange(len(metric_dict["rmses"])), metric_dict["rmses"], "o:", color="crimson")
+        ax1.set_title('RMSE')
+        ax1.set_ylabel("RMSE")
+        ax1.grid(True)
+
+        ax2.plot(np.arange(len(metric_dict["rmses"])), metric_dict["bin_content"], "o:", color="teal")
+        ax2.plot(np.arange(len(metric_dict["rmses"])), metric_dict["nan_bin_content"], "o:", color="grey")
+        if sum(metric_dict["nan_bin_content"]) > 0:
+            ax2.legend(["# of valid spectrum pairs", "# of nan spectrum pairs"])
+        ax2.set_title('# of spectrum pairs')
+        ax2.set_ylabel("# of spectrum pairs")
+        ax2.set_xlabel("Tanimoto score bin")
+        plt.yscale('log')
+        plt.xticks(np.arange(len(metric_dict["rmses"])), [f"{a:.1f} to < {b:.1f}" for (a, b) in metric_dict["bounds"]], rotation='vertical')
+        ax2.grid(True)
+        
+        # Save figure
+        fig_path = os.path.join(metric_dir, "metrics.png")
+        plt.savefig(fig_path)
+        
+        # spec2vec_percentile_plot(predictions, scores_ref, metric_dir)
+        
+        # Train-Test Similarity Bar Plot
+        train_test_sim = train_test_similarity_bar_plot(predictions, train_test_similarities, ref_score_bins)
+        bin_content, bounds = train_test_sim['bin_content'], train_test_sim['bounds']
+        plt.figure(figsize=(12, 9))
+        plt.title("Number of Structures in Similarity Bins (Max Similarity to Train Set)")
+        plt.bar(range(len(bin_content)), bin_content, label='Number of Structures')
+        plt.xlabel('Similarity Bin (Max Similarity to Train Set)')
+        plt.ylabel('Number of Structures')
+        plt.xticks(range(len(bin_content)), [f"({bounds[i][0]:.2f}-{bounds[i][1]:.2f})" for i in range(len(bounds))], rotation=45)
+        plt.legend()
+        plt.savefig(os.path.join(metric_dir, 'train_test_similarity_bar_plot.png'), bbox_inches="tight")
+        
+        # Score, Tanimoto Scatter Plot
+        plt.figure(figsize=grid_fig_size)
+        plt.scatter(predictions['score'], predictions['tanimoto'], alpha=0.2)
+        # Show R Squared
+        r2 = np.corrcoef(predictions['score'], predictions['tanimoto'])[0,1]**2
+        # Plot y=x line
+        plt.plot([0, 1], [0, 1], color='red', linestyle='--')
+        plt.xlabel('Predicted Spectral Similarity Score')
+        plt.ylabel('Tanimoto Score')
+        # Make square
+        plt.xlim(0, 1)
+        plt.ylim(0, 1)
+        plt.title(f'Predicted vs Reference Spectral Similarity Scores \n(R squared = {r2:.2f})')
+        plt.savefig(os.path.join(metric_dir, 'predicted_vs_reference.png'))
+        
+        # Score, Tanimoto Binned Histograms
+        # This should show 10 histograms vertically stacked that correspond to 10 different tanimoto similarity bins
+        #plt.figure(figsize=(20,20))
+        # TODO    
+        
+        # Score, Tanimoto Scatter Plot (Hexbin)
+        plt.figure(figsize=grid_fig_size)    
+        hb = plt.hexbin(predictions['score'], predictions['tanimoto'], gridsize=50, cmap='inferno', bins='log')
+        cb = plt.colorbar(hb)
+        cb.set_label('log counts')
+        plt.xlabel('Predicted Spectral Similarity Score')
+        plt.ylabel('Tanimoto Score')
+        # Make square
+        plt.xlim(0, 1)
+        plt.ylim(0, 1)
+        plt.title('Predicted vs Reference Spectral Similarity Scores')
+        plt.savefig(os.path.join(metric_dir, 'predicted_vs_reference_hexbin.png'))
 
     
 if __name__ == "__main__":

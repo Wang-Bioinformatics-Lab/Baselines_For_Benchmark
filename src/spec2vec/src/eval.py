@@ -25,6 +25,23 @@ from utils import   get_structural_similarity_matrix, \
                     train_test_similarity_heatmap, \
                     train_test_similarity_bar_plot
                     
+                    
+grid_fig_size = (10,10)
+plt.rcParams.update({
+    "text.usetex": False,
+    "font.size": 20,
+    "axes.titlesize": 20,
+    "axes.labelsize": 20,
+    "xtick.labelsize": 18, #
+    "ytick.labelsize": 18, #
+    "legend.fontsize": 18, #
+    "figure.titlesize": 20,
+    "legend.title_fontsize": 20, #
+    "figure.autolayout": True,
+    "figure.dpi": 300,
+    })
+
+                    
 def get_spectra(spectra_path:str)->list:
     spectra = pickle.load(open(spectra_path, 'rb'))
     return spectra
@@ -284,11 +301,23 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
         predictions['error'] = (predictions['tanimoto'] - predictions['score']).abs()
         
         predictions = predictions.copy()
-        
-        
-        
+
     elif model == 'modified_cosine':
         predictions = pd.read_csv(pairs_path)
+        
+        # Create sets of the pairs
+        pair_set = set(map(tuple, predictions[['spectrum_id_1', 'spectrum_id_2']].values))
+        reverse_pair_set = set(map(tuple, predictions[['spectrum_id_2', 'spectrum_id_1']].values))
+
+        # Check if predictions is symmetric
+        if pair_set != reverse_pair_set:
+            print("Pairs file is not symmetric. Making it symmetric.")
+            predictions = pd.concat([predictions, predictions.rename(columns={'spectrum_id_1':'spectrum_id_2',
+                                                                    'spectrum_id_2':'spectrum_id_1',
+                                                                    'inchikey_1':'inchikey_2',
+                                                                    'inchikey_2':'inchikey_1'})], axis=0)
+            print("Pairs are now symmetric.")
+        
         predictions['score'] = predictions['modified_cosine']
         predictions['tanimoto'] = predictions['structural_similarity']
         predictions.drop(columns=['modified_cosine', 'structural_similarity'], inplace=True)
@@ -302,6 +331,10 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
         
     else:
         raise ValueError(f"Model {model} not recognized")
+    
+    overall_rmse = np.sqrt(np.nanmean(np.square(predictions['error'].values)))
+    print("Overall RMSE (from evaluate()):", overall_rmse)
+    overall_mae =  np.nanmean(np.abs(predictions['error'].values))
     
     ref_score_bins = np.linspace(0,1.0, 21)
     # Train-Test Similarity Dependent Losses
@@ -319,7 +352,7 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
     
     plt.xticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels, rotation=90)
     plt.yticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels,)
-    plt.savefig(os.path.join(metric_dir, 'heatmap.png'), dpi=300, bbox_inches = "tight")
+    plt.savefig(os.path.join(metric_dir, 'heatmap.png'))
     # Train-Test Similarity Dependent Counts
     plt.figure()
     plt.title('Train-Test Dependent Counts')
@@ -332,7 +365,7 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
         for j in range(len(train_test_grid['rmses'])):
             if train_test_grid['bin_content'][i,j] < 30 and not pd.isna(train_test_grid['bin_content'][i,j]):
                 plt.text(j, i, f'{train_test_grid["bin_content"][i,j]:.0f}', ha="center", va="center", color="white")
-    plt.savefig(os.path.join(metric_dir, 'heatmap_counts.png'), dpi=300, bbox_inches = "tight")
+    plt.savefig(os.path.join(metric_dir, 'heatmap_counts.png'))
     # Train-Test Similarity Dependent Nan-Counts
     plt.figure()
     plt.title('Train-Test Dependent Nan-Counts')
@@ -340,16 +373,24 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
     plt.colorbar()
     plt.xticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels, rotation=90)
     plt.yticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels,)
-    plt.savefig(os.path.join(metric_dir, 'heatmap_nan_counts.png'), dpi=300, bbox_inches = "tight")
+    plt.savefig(os.path.join(metric_dir, 'heatmap_nan_counts.png'))
+    
+    # Train-Test Similarity Dependent Losses Aggregated
+    plt.figure(figsize=(12, 9))
+    plt.bar(np.arange(len(similarity_dependent_metrics_max["rmses"]),), similarity_dependent_metrics_max["rmses"],)
+    plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
+    plt.xlabel("Max Test-Train Stuctural Similarity")
+    plt.ylabel("Max Test-Train Stuctural Similarity")
+    plt.ylabel("RMSE")
+    plt.xlabel("Tanimoto score bin")
+    plt.xticks(np.arange(len(similarity_dependent_metrics_max["rmses"])), [f"{a:.2f} to < {b:.2f}" for (a, b) in similarity_dependent_metrics_max["bounds"]], rotation='vertical')
+    plt.grid(True)
+    plt.savefig(os.path.join(metric_dir, 'train_test_rmse.png'))
     
     # MS2DeepScore Tanimoto Dependent Losses Plot
     ref_score_bins = np.linspace(0,1.0, 11)
 
     tanimoto_dependent_dict = tanimoto_dependent_losses(predictions, ref_score_bins)
-    
-    rmse = np.sqrt(np.mean(np.square(predictions['error'].values)))
-    print("Overall RMSE (from evaluate()):", rmse)
-    mae =  np.mean(np.abs(predictions['error'].values))
     
     metric_dict = {}
     metric_dict["bin_content"]      = tanimoto_dependent_dict["bin_content"]
@@ -357,8 +398,8 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
     metric_dict["bounds"]           = tanimoto_dependent_dict["bounds"]
     metric_dict["rmses"]            = tanimoto_dependent_dict["rmses"]
     metric_dict["maes"]             = tanimoto_dependent_dict["maes"]
-    metric_dict["rmse"] = rmse
-    metric_dict["mae"]  = mae
+    metric_dict["rmse"] = overall_rmse
+    metric_dict["mae"]  = overall_mae
     
     # Save to pickle
     metric_path = os.path.join(metric_dir, "metrics.pkl")
@@ -371,7 +412,7 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
     train_test_metric_path = os.path.join(metric_dir, "train_test_grid.pkl")
     pickle.dump(train_test_grid, open(train_test_metric_path, "wb"))
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(4, 5), dpi=120)
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(6, 8))
     
     ax1.plot(np.arange(len(metric_dict["rmses"])), metric_dict["rmses"], "o:", color="crimson")
     ax1.set_title('RMSE')
@@ -391,14 +432,16 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
     
     # Save figure
     fig_path = os.path.join(metric_dir, "metrics.png")
-    plt.savefig(fig_path, dpi=300, bbox_inches = "tight")
+    plt.savefig(fig_path)
     
-    spec2vec_percentile_plot(predictions, metric_dir)
+    # Only do this for spec2vec
+    if model == 'spec2vec':
+        spec2vec_percentile_plot(predictions, metric_dir)
     
     # Train-Test Similarity Bar Plot
     train_test_sim = train_test_similarity_bar_plot(predictions, train_test_similarities, ref_score_bins)
     bin_content, bounds = train_test_sim['bin_content'], train_test_sim['bounds']
-    plt.figure(figsize=(20, 5))
+    plt.figure(figsize=(12, 9))
     plt.title("Number of Structures in Similarity Bins (Max Similarity to Train Set)")
     plt.bar(range(len(bin_content)), bin_content, label='Number of Structures')
     plt.xlabel('Similarity Bin (Max Similarity to Train Set)')
@@ -408,7 +451,7 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
     plt.savefig(os.path.join(metric_dir, 'train_test_similarity_bar_plot.png'), dpi=300, bbox_inches="tight")
     
     # Score, Tanimoto Scatter Plot
-    plt.figure(figsize=(10,10))
+    plt.figure(figsize=grid_fig_size)
     plt.scatter(predictions['score'], predictions['tanimoto'], alpha=0.2)
     plt.xlabel('Predicted Spectral Similarity Score')
     plt.ylabel('Tanimoto Score')
@@ -417,6 +460,21 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
     plt.ylim(0, 1)
     plt.title('Predicted vs Reference Spectral Similarity Scores')
     plt.savefig(os.path.join(metric_dir, 'predicted_vs_reference.png'), dpi=300)
+    
+    # Score, Tanimoto Scatter Plot
+    plt.figure(figsize=grid_fig_size)
+    plt.scatter(predictions['score'], predictions['tanimoto'], alpha=0.2)
+    # Show R Squared
+    r2 = np.corrcoef(predictions['score'][predictions['score'].notna()], predictions['tanimoto'][predictions['score'].notna()],)[0,1]**2
+    # Plot y=x line
+    plt.plot([0, 1], [0, 1], color='red', linestyle='--')
+    plt.xlabel('Predicted Spectral Similarity Score')
+    plt.ylabel('Tanimoto Score')
+    # Make square
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    plt.title(f'Predicted vs Reference Spectral Similarity Scores \n(R squared = {r2:.2f})')
+    plt.savefig(os.path.join(metric_dir, 'predicted_vs_reference.png'))
     
 def eval_ms2deepscore(split_type:str, model:str, data_path:str, metric_dir:str, pairs_path:str=None):
     if not os.path.isdir(metric_dir):
@@ -535,7 +593,10 @@ def main():
     if args.method == 'modified_cosine':
         if args.model is not None:
             raise ValueError("Model path can not be provided for modified cosine")
-        metric_dir = f'./{args.split_type}/{args.method}/metrics'
+        if args.pairs_path is not None:
+            metric_dir = f'./{args.split_type}/{args.method}/metrics_filtered_pairs/'
+        else:
+            metric_dir = f'./{args.split_type}/{args.method}/metrics/'
         eval_modified_cosine(args.split_type, args.data, metric_dir, args.pairs_path)
     elif args.method.lower() in ['spec2vec', 'ms2deepscore']:
         if args.split_type is None:
@@ -569,7 +630,10 @@ def main():
             print(f"Running model ({model_index+1}/{len(available_models)})...", flush=True)
             print('model_name', model_name)
             model_time = datetime.strptime(model_name.split('/')[-2], "%d_%m_%Y_%H_%M_%S")
-            metric_dir = f'./{args.split_type}/{model_name.rsplit("/",2)[-2]}/metrics'
+            if args.pairs_path is not None:
+                metric_dir = f'./{args.split_type}/{model_name.rsplit("/",2)[-2]}/metrics_filted_pairs/'
+            else:
+                metric_dir = f'./{args.split_type}/{model_name.rsplit("/",2)[-2]}/metrics/'
             eval_spec2vec(args.split_type, model_time.strftime("%d_%m_%Y_%H_%M_%S"), args.data, metric_dir, args.pairs_path)
 
 if __name__ == "__main__":

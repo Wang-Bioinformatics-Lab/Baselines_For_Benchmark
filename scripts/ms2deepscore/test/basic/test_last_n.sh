@@ -12,6 +12,9 @@ echo "Performing Inverence for MS2DeepScore with a basic split"
 
 cd $BIN_DIR
 
+echo "THIS HAS NOT BEEN UPDAETED"
+exit 1
+
 python3 test.py --test_path "./basic_similarity/data/ALL_GNPS_positive_test_split_01082024.pickle" \
                  --tanimoto_path "./basic_similarity/test_tanimoto_df.csv" \
                  --train_test_similarities "./basic_similarity/train_test_tanimoto_df.csv" \

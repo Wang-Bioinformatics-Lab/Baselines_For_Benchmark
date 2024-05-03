@@ -6,8 +6,9 @@ from matplotlib import pyplot as plt
 import pandas as pd
 import numpy as np
 
-from ms2deepscore import SpectrumBinner
-from ms2deepscore.data_generators import DataGeneratorAllInchikeys
+from custom_spectrum_binner import SpectrumBinner
+from ms2deepscore.data_generators import DataGeneratorAllInchikeys#, DataGeneratorCherrypicked
+# from ms2deepscore.train_new_model.spectrum_pair_selection import SelectedCompoundPairs
 from ms2deepscore.models import SiameseModel
 from ms2deepscore import MS2DeepScore
 from ms2deepscore.models import load_model
@@ -16,12 +17,26 @@ from tensorflow import keras
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from tensorflow.keras.optimizers import Adam
 
+from train_generator_from_pairs import SelectedCompoundPairs, DataGeneratorCherrypickedInChi
+
 import pickle
+
+class StrWrapper():
+    """ A small wrapper to deal with .to_json() calls made on string
+    metadata.
+    """
+    def __init__(self, s):
+        self.s = s
+    
+    def to_json(self):
+            return self.s
 
 def main():
     parser = argparse.ArgumentParser(description='Train MS2DeepScore on the original data')
     parser.add_argument('--train_path', type=str, help='Path to the training data')
     parser.add_argument('--val_path', type=str, help='Path to the validation data')
+    parser.add_argument('--train_pairs_path', type=str, help='Path to the pairs', default=None)
+    parser.add_argument('--val_pairs_path', type=str, help='Path to the pairs', default=None)
     parser.add_argument('--tanimoto_path', type=str, help='Path to the tanimoto scores')
     parser.add_argument('--save_dir', type=str, help='Path to the save directory')
     args = parser.parse_args()
@@ -53,18 +68,60 @@ def main():
 
     same_prob_bins = list(zip(np.linspace(0, 0.9, 10), np.linspace(0.1, 1, 10)))
     dimension = len(spectrum_binner.known_bins)
-    training_generator = DataGeneratorAllInchikeys(
-        binned_spectrums_training, tanimoto_df, spectrum_binner=spectrum_binner, selected_inchikeys=training_inchikeys,
-        same_prob_bins=same_prob_bins, num_turns=2, augment_noise_max=10, augment_noise_intensity=0.01)
-
     validation_inchikeys = np.unique([s.get("inchikey")[:14] for s in spectrums_val])
+    
+    if args.train_pairs_path is None:
+        training_generator = DataGeneratorAllInchikeys(
+            binned_spectrums_training, tanimoto_df, spectrum_binner=spectrum_binner, selected_inchikeys=training_inchikeys,
+            same_prob_bins=same_prob_bins, num_turns=2, augment_noise_max=10, augment_noise_intensity=0.01)
+    else:
+        # Using the given pairs, we can create a generator that only uses these pairs
+        train_pairs = pd.read_feather(args.train_pairs_path)
+        # Print all cols and dtypes
+        for col in train_pairs.columns:
+            print(col, train_pairs[col].dtype)
+        
+        selected_compound_pairs_train = SelectedCompoundPairs(train_pairs, shuffle=True, same_prob_bins=same_prob_bins)
+        del train_pairs
+        training_generator = DataGeneratorCherrypickedInChi(
+            binned_spectrums_training, selected_compound_pairs_train, spectrum_binner=spectrum_binner, selected_inchikeys=training_inchikeys,
+            same_prob_bins=same_prob_bins, num_turns=2, augment_noise_max=10, augment_noise_intensity=0.01
+        )
+        # training_generator =  tf.data.Dataset.from_generator(DataGeneratorCherrypickedInChi, 
+        #                                                      args=(binned_spectrums_training, selected_compound_pairs_train, 
+        #                                                            spectrum_binner, training_inchikeys, same_prob_bins, 2, 10, 0.01),
+        #                                                   output_signature=(
+        #                                                       tf.TensorSpec(shape=(None, dimension), dtype=tf.float32),
+        #                                                       tf.TensorSpec(shape=(None, dimension), dtype=tf.float32),
+        #                                                       tf.TensorSpec(shape=(None,), dtype=tf.float32)
+        #                                                   )
+        #                                                  ).prefetch(tf.data.AUTOTUNE)
 
-    # tanimoto_scores_df = pickle.load(open("./data/similarities_test_pos.pkl", "rb"))
 
-    validation_generator = DataGeneratorAllInchikeys(
-        binned_spectrums_val, tanimoto_df, spectrum_binner=spectrum_binner, selected_inchikeys=validation_inchikeys, same_prob_bins=same_prob_bins,
-        num_turns=10, augment_removal_max=0, augment_removal_intensity=0, 
-        augment_intensity=0, augment_noise_max=0, use_fixed_set=True)
+    if args.val_pairs_path is None:
+        validation_generator = DataGeneratorAllInchikeys(
+            binned_spectrums_val, tanimoto_df, spectrum_binner=spectrum_binner, selected_inchikeys=validation_inchikeys, same_prob_bins=same_prob_bins,
+            num_turns=10, augment_removal_max=0, augment_removal_intensity=0,
+            augment_intensity=0, augment_noise_max=0, use_fixed_set=True)
+    else:
+        val_pairs = pd.read_feather(args.val_pairs_path)
+        
+        selected_compound_pairs_val  = SelectedCompoundPairs(val_pairs, shuffle=False, same_prob_bins=same_prob_bins)
+        del val_pairs
+        validation_generator = DataGeneratorCherrypickedInChi(
+            binned_spectrums_val, selected_compound_pairs_val, spectrum_binner=spectrum_binner, selected_inchikeys=validation_inchikeys, same_prob_bins=same_prob_bins,
+            num_turns=10, augment_removal_max=0, augment_removal_intensity=0,
+            augment_intensity=0, augment_noise_max=0, use_fixed_set=True
+        )
+        
+    # DEBUG
+    print("Training generator:")
+    print(training_generator)
+    print(training_generator[0])
+    
+    print("Validation generator:")
+    print(validation_generator)
+    print(validation_generator[0])
 
     model = SiameseModel(spectrum_binner, base_dims=(500, 500), embedding_dim=200,
                             dropout_rate=0.2)

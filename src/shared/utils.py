@@ -27,7 +27,7 @@ def train_test_similarity_dependent_losses(prediction_df, train_test_similarity,
     maes = []
     bounds = []
     ref_scores_bins_inclusive = ref_score_bins.copy()
-    ref_scores_bins_inclusive[0] = -np.inf
+    # ref_scores_bins_inclusive[0] = -np.inf
     ref_scores_bins_inclusive[-1] = np.inf
     
     assert mode in ['max', 'mean']
@@ -51,11 +51,9 @@ def train_test_similarity_dependent_losses(prediction_df, train_test_similarity,
         high = ref_scores_bins_inclusive[i+1]
         bounds.append((low, high))
         relevant_keys = train_test_similarity.loc[(train_test_similarity > low) & (train_test_similarity <= high)].index
-
-        # THIS LOOKS LIKE A BUG
-        # # When passing an error matrix that has been filtered by valid pairs, not all train-test similarity keys will be in the error matrix
-        # relevant_keys = relevant_keys.intersection(all_predicted_inchikeys)
-        relevant_values = prediction_df.loc[(prediction_df['inchikey_1'].isin(relevant_keys)) & (prediction_df['inchikey_2'].isin(relevant_keys))]['error']
+        
+        relevant_values = prediction_df.loc[(prediction_df['inchikey_1'].isin(relevant_keys)), :]['error']
+        
         bin_content.append(relevant_keys.shape[0])
         
         maes.append(np.nanmean(np.abs(relevant_values).values))
@@ -68,7 +66,7 @@ def train_test_similarity_dependent_losses(prediction_df, train_test_similarity,
 def train_test_similarity_heatmap(prediction_df, train_test_similarity, ref_score_bins):
     # prediction_df is a pandas dataframe with columns spectruim_id_1, spectrum_id_2, inchikey_1, inchikey_2, score, error
     ref_scores_bins_inclusive = ref_score_bins.copy()
-    ref_scores_bins_inclusive[0] = -np.inf
+    # ref_scores_bins_inclusive[0] = -np.inf
     ref_scores_bins_inclusive[-1] = np.inf
     
     nan_count_grid   = np.zeros((len(ref_score_bins)-1, len(ref_score_bins)-1))
@@ -119,7 +117,7 @@ def train_test_similarity_heatmap(prediction_df, train_test_similarity, ref_scor
 
 def train_test_similarity_bar_plot(prediction_df, train_test_similarity, bins):
         ref_scores_bins_inclusive = bins.copy()
-        ref_scores_bins_inclusive[0] = -np.inf
+        # ref_scores_bins_inclusive[0] = -np.inf
         ref_scores_bins_inclusive[-1] = np.inf
         
         all_predicted_inchikeys = prediction_df['inchikey_1'].unique()  # We assume square matrix

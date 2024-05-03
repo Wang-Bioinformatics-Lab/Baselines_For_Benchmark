@@ -1,20 +1,13 @@
-from pathlib import Path
 import os
 import argparse
 
-import matchms
-from matchms.importing.load_from_msp import parse_msp_file
 from matchms.importing import load_from_mgf, load_from_msp
 import pandas as pd
 import numpy as np
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
-from ms2deepscore import SpectrumBinner
-from ms2deepscore.data_generators import DataGeneratorAllInchikeys
-from ms2deepscore.models import SiameseModel
 from ms2deepscore import MS2DeepScore
-from ms2deepscore.models import load_model
 
 from matchms.filtering import metadata_processing
 
@@ -23,9 +16,6 @@ from matchms.filtering import normalize_intensities, add_parent_mass, derive_add
 from matchms.filtering import require_minimum_number_of_peaks
 from matchms.filtering import select_by_relative_intensity
 
-from matchms.filtering.metadata_processing.repair_not_matching_annotation import repair_not_matching_annotation
-from matchms.filtering.metadata_processing.derive_inchi_from_smiles import derive_inchi_from_smiles
-from matchms.filtering.metadata_processing.derive_inchikey_from_inchi import derive_inchikey_from_inchi
 from matchms.filtering.filter_utils.smile_inchi_inchikey_conversions import is_valid_inchikey
 from matchms.filtering.metadata_processing.harmonize_undefined_inchikey import harmonize_undefined_inchikey
 from matchms.filtering.metadata_processing.harmonize_undefined_inchi import harmonize_undefined_inchi

@@ -17,4 +17,5 @@ cd $BIN_DIR
 python3 test.py --test_path $DATA_DIR"/data/ALL_GNPS_positive_test_split.pickle" \
                  --tanimoto_path "/data/nas-gpu/SourceCode/michael_s/Baselines_For_Benchmark/data/structural_similarity/processed/test_tanimoto_df.csv" \
                  --train_test_similarities "/data/nas-gpu/SourceCode/michael_s/Baselines_For_Benchmark/data/structural_similarity/processed/train_test_tanimoto_df.csv" \
-                 --save_dir "./basic_similarity/"
+                 --save_dir "./basic_similarity/" \
+                 --n_most_recent 2
