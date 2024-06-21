@@ -47,15 +47,15 @@ plt.rcParams.update({
 
 def main():
     parser = argparse.ArgumentParser(description='Test MS2DeepScore on the original data')
-    parser.add_argument('--test_path', type=str, help='Path to the test data')
-    parser.add_argument("--tanimoto_path", type=str, help="Path to the tanimoto scores")
+    parser.add_argument('--test_path', type=str, help='Path to the test data')      # Path to pickle file of spectra
+    parser.add_argument("--tanimoto_path", type=str, help="Path to the tanimoto scores")        # Path to a csv file with columns, indexs of inchikey[:14]
     parser.add_argument("--train_test_similarities", type=str, help="Path to the train-test tanimoto scores")
     parser.add_argument("--save_dir", type=str, help="Path to the model")
     parser.add_argument("--model_path", type=str, help="Path to the model, overrides n_most_recent", default=None)
     parser.add_argument("--save_dir_insert", type=str, help="Appended to save dir, to help organize test sets", default="")
     parser.add_argument("--n_most_recent", type=int, help="Number of most recent models to evaluate", default=None)
-    parser.add_argument("--test_pairs_path", type=str, default=None, help="Path to the test pairs file")
-    parser.add_argument("--train_pairs_path", type=str, default=None, help="Path to the train pairs file")
+    parser.add_argument("--test_pairs_path", type=str, default=None, help="Path to the test pairs file")    # Path to filtered train pairs
+    parser.add_argument("--train_pairs_path", type=str, default=None, help="Path to the train pairs file")  # Path to filtered test pairs
     args = parser.parse_args()
     
     # # Check if it's a file
