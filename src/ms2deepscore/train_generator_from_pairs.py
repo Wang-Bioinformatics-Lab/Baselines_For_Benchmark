@@ -1,3 +1,4 @@
+import gc
 import warnings
 import numpy as np
 import pandas as pd
@@ -5,9 +6,18 @@ import pandas as pd
 from typing import Iterator, List, NamedTuple, Optional
 from custom_spectrum_binner import SpectrumBinner
 from ms2deepscore.data_generators import DataGeneratorBase, SpectrumPair
+from prefetch_generator import background
+import pickle
+
+from glob import glob
+import re
+import os
+
+# DEBUG
+from line_profiler import profile
 
 class SelectedCompoundPairs:
-    def __init__(self, pairs:pd.DataFrame, shuffle=True, same_prob_bins=None):
+    def __init__(self, pairs, inchikeys=None, shuffle=True, same_prob_bins=None):
         
         """ Pairs is a dataframe comtaining:
         spectrum_id_1,spectrum_id_2,mass_analyzer,ionisation,
@@ -15,19 +25,43 @@ class SelectedCompoundPairs:
         greedy_cosine,modified_cosine,matched_peaks
         """
         # Check if pairs is symmetric
-        pair_set = set(map(tuple, pairs[['spectrum_id_1', 'spectrum_id_2']].values))
-        reverse_pair_set = set(map(tuple, pairs[['spectrum_id_2', 'spectrum_id_1']].values))
-        if pair_set != reverse_pair_set:
-            print("Pairs file is not symmetric. Making it symmetric.")
-            pairs = pd.concat([pairs, pairs.rename(columns={'spectrum_id_1':'spectrum_id_2',
-                                                                    'spectrum_id_2':'spectrum_id_1',
-                                                                    'inchikey_1':'inchikey_2',
-                                                                    'inchikey_2':'inchikey_1'})], axis=0)
-            print("Pairs are now symmetric.")
+        if isinstance(pairs, pd.DataFrame):
+            pair_set = set(map(tuple, pairs[['spectrum_id_1', 'spectrum_id_2']].values))
+            reverse_pair_set = set(map(tuple, pairs[['spectrum_id_2', 'spectrum_id_1']].values))
+            
+            if pair_set != reverse_pair_set:
+                print("Pairs file is not symmetric. Making it symmetric.")
+                pairs = pd.concat([pairs, pairs.rename(columns={'spectrum_id_1':'spectrum_id_2',
+                                                                        'spectrum_id_2':'spectrum_id_1',
+                                                                        'inchikey_1':'inchikey_2',
+                                                                        'inchikey_2':'inchikey_1'})], axis=0)
+                print("Pairs are now symmetric.")
+            del pair_set, reverse_pair_set
+            gc.collect()
+                
+            # Make pairs a dict
+            print("Building Pairs Dictionary", flush=True)
+            self.pairs          = dict(tuple(pairs.groupby('inchikey_1')))
+            del pairs
+            print("Done", flush=True)
+            gc.collect()
         
-        pairs          = pairs.groupby('inchikey_1')
-        # Make pairs a dict
-        self.pairs          = {inchikey:group for inchikey, group in pairs}
+        # Otherwise it's an hdf pandas
+        elif isinstance(pairs, pd.io.pytables.HDFStore):
+            print("Recieved pairs as an HDF5 store. Assuming pairs is symmteric", flush=True)
+            self.pairs = pairs
+            if shuffle:
+                print("Shuffling pairs for HDF5 store is not implemented. Pairs will not be shuffled.", flush=True)
+                shuffle=False
+        else:
+            raise ValueError(f"Expected pairs to be pd.DataFrame or pd.io.pytables.HDFStore but got {type(pairs)}")
+        
+        if inchikeys is None:
+            print("inchikeys were not supplied, using inchikeys in pairs.")
+            self.inchikeys = self.pairs.keys()
+        else:
+            self.inchikeys = inchikeys
+        
         self.shuffle        = shuffle
         self.same_prob_bins = same_prob_bins
         
@@ -36,27 +70,50 @@ class SelectedCompoundPairs:
             self._shuffle()
                 
         # Group the symmetric pairs by inchikey_1, so that we can easily get all pairs for a given inchikey
-        self.curr_pair_idx = {inchikey:0 for inchikey in self.pairs.keys()}
+        self.curr_pair_idx = {inchikey:0 for inchikey in self.inchikeys}
     
     def _shuffle(self,):
-        for inchikey, group in self.pairs.items():
-            self.pairs[inchikey] = group.sample(frac=1, replace=False)
+        if not self.shuffle:
+            print("self.shuffle is set to false so we'll skip shuffling")
+        else:
+            for inchikey, group in self.pairs.items():
+                self.pairs[inchikey] = group.sample(frac=1, replace=False)
     
     def reset_counts(self):
-        self.curr_pair_idx = {inchikey:0 for inchikey in self.pairs.keys()}
+        self.curr_pair_idx = {inchikey:0 for inchikey in self.inchikeys}
     
     def next_pair_for_inchikey(self, inchikey:str):
         # Make sure we can't go off the end
         idx = self.curr_pair_idx[inchikey] % len(self.pairs.get(inchikey))
-        sampled_row = self.pairs.get(inchikey).iloc[idx]
+        sampled_row = None
+        if isinstance(self.pairs, dict):
+            sampled_row = self.pairs.get(inchikey).iloc[idx]
+        elif isinstance(self.pairs, pd.io.pytables.HDFStore):
+            selected_data = self.pairs.select(inchikey)
+            sampled_row = selected_data.iloc[idx]
+            sampled_row['inchikey_1'] = inchikey
+        else:
+            raise ValueError("self.pairs is neither dict or pd.io.pytables.HDFStore.")
+            
         return sampled_row['structural_similarity'], \
             (sampled_row['inchikey_1'], sampled_row['inchikey_2']), \
             (sampled_row['spectrum_id_1'], sampled_row['spectrum_id_2'])
     
-    def _find_match_in_range(self, inchikey, target_score_range):
-        group = self.pairs.get(inchikey)
+    def _find_match_in_range(self, inchikey, target_score_range, verbose=False):
+        if isinstance(self.pairs, dict):
+            group = self.pairs.get(inchikey)
+        elif isinstance(self.pairs, pd.io.pytables.HDFStore):
+            group = self.pairs.select(inchikey)
+            group['inchikey_1'] = inchikey
+            # print(inchikey)
+            # print(group)
+        else:
+            raise ValueError(f"self.pairs is neither dict or pd.io.pytables.HDFStore, got type {type(self.pairs)}.")
+        
         options = group[(group['structural_similarity'] >= target_score_range[0]) & (group['structural_similarity'] < target_score_range[1])]
         if len(options) == 0:
+            if verbose:
+                print(f"Failed to find options for {inchikey} in range ({target_score_range[0]:.2f}, {target_score_range[1]:.2f})")
             return None
         return options.sample()
          
@@ -71,8 +128,214 @@ class SelectedCompoundPairs:
                 (sampled_row['spectrum_id_1'].item(), sampled_row['spectrum_id_2'].item())
                 
     def idx_to_inchikey(self, idx):
-        return list(self.pairs.keys())[idx]
+        return list(self.inchikeys)[idx]
+    
+class PrebatchedGenerator(DataGeneratorBase):
+    # This generator uses a feather file, which already contains the spectra
+    @staticmethod
+    def _extract_epoch_number(epoch_dir):
+        match = re.search(r'epoch_(\d+)', epoch_dir)
+        if match:
+            return int(match.group(1))
+        raise ValueError()
+    @staticmethod
+    def _extract_batch_number(batch_dir):
+        match = re.search(r'batch_(\d+)', batch_dir)
+        if match:
+            return int(match.group(1))
+        raise ValueError()
+    
+    def __init__(self, prebatched_data_dir):
+        self.data_dir = prebatched_data_dir
+        
+        all_epochs = glob(prebatched_data_dir + '/epoch_*')
+        print(f"Found {len(all_epochs)} epochs of data.")
+        # Sort epochs by number
+        all_epochs = sorted(all_epochs, key=self._extract_epoch_number)
+        
+        self.epoch_lst = all_epochs
+        self.curr_epoch = 0
+        curr_epoch_batches = glob(self.epoch_lst[self.curr_epoch] + '/*.pkl')
+        self.curr_epoch_batches = sorted(curr_epoch_batches, key=self._extract_batch_number)
+    
+    def __len__(self,):
+        # Return length of first batch
+        return len(self.curr_epoch_batches)
+    
+    def __getitem__(self, batch_index: int):
+        """Generate one batch of data.
 
+        If use_fixed_set=True we try retrieving the batch from self.fixed_set (or store it if
+        this is the first epoch). This ensures a fixed set of data is generated each epoch.
+        """
+        
+        return pickle.load(open(self.curr_epoch_batches[batch_index], 'rb'))
+
+class PrebatchedGeneratorHDF5(DataGeneratorBase):
+    # This generator uses and HDF5 file, which does not contain the spectra. The spectra must
+    # be loaded from a separate source.
+    @staticmethod
+    def _extract_epoch_number(epoch_dir):
+        match = re.search(r'epoch_(\d+)', epoch_dir)
+        if match:
+            return int(match.group(1))
+        raise ValueError()
+    # @staticmethod
+    # def _extract_batch_number(batch_dir):
+    #     match = re.search(r'batch_(\d+)', batch_dir)
+    #     if match:
+    #         return int(match.group(1))
+    #     raise ValueError()
+    
+    def __init__(self, prebatched_data_path, binned_spectra, spectrum_binner,  **settings):
+        self.data_dir = prebatched_data_path
+
+        # Attributes required for _data_generation
+        self.dim = len(spectrum_binner.known_bins)
+        additional_metadata = spectrum_binner.additional_metadata
+        if len(additional_metadata) > 0:
+            self.additional_metadata = \
+                [additional_feature_type.to_json() for additional_feature_type in additional_metadata]
+        else:
+            self.additional_metadata = ()
+
+        # Convert spectra to a dict by spectrum_id
+        spectra_dict = {s.get("spectrum_id"): s for s in binned_spectra}
+
+        self.spec_dict = spectra_dict
+        
+        self.hdf_store = pd.HDFStore(prebatched_data_path)
+        keys = self.hdf_store.keys()
+        # Filter keys by regex 'epoch_<number>'
+        keys = [key for key in keys if re.match(r'^/epoch_\d+$', key)]
+        # Sort keys by number
+        self.keys = sorted(keys, key=self._extract_epoch_number)
+        print(f"Found {len(self.keys)} epochs of data.")
+        
+        self.curr_epoch = 0
+        self.curr_loaded_epoch = None
+        self.epoch_data = None
+
+        self._set_generator_parameters(**settings)
+    
+    def __len__(self,):
+        # Return length of first batch
+        self._load_epoch_data(self.curr_epoch)
+        return int(len(self.epoch_data)/self.settings['batch_size'])
+
+    def _load_epoch_data(self, epoch_index: int):
+        """Loads the epoch data into memory."""
+        if self.curr_loaded_epoch is None or self.curr_loaded_epoch != epoch_index:
+            self.epoch_data = self.hdf_store[self.keys[epoch_index]]
+            self.curr_loaded_epoch = epoch_index
+
+    
+    def __getitem__(self, batch_index: int):
+        """Generate one batch of data.
+
+        If use_fixed_set=True we try retrieving the batch from self.fixed_set (or store it if
+        this is the first epoch). This ensures a fixed set of data is generated each epoch.
+        """
+        self._load_epoch_data(self.curr_epoch)  # Only load the hdf table once per epoch
+
+        start_index = batch_index * self.settings['batch_size']
+        end_index = (batch_index + 1) * self.settings['batch_size']
+
+        batch = self.epoch_data.iloc[start_index:end_index]
+        
+        # batch is a dataframe with the columns spectrumid1, spectrumid2, inchikey1, inchikey2, and score
+        # We need to transform this to a list of tuples where the first and second elements are spectra
+        # and the third element is the score
+
+        output = []
+        for _, row in batch.iterrows():
+            spectrum1 = self.spec_dict[row['spectrumid1']]
+            spectrum2 = self.spec_dict[row['spectrumid2']]
+            output.append((spectrum1, spectrum2, row['score']))
+
+        return self._data_generation(output)
+
+    def on_epoch_end(self):
+        """Updates indexes after each epoch"""
+        self.curr_epoch +=1
+
+    def _set_generator_parameters(self, **settings):
+        """Set parameter for data generator. Use below listed defaults unless other
+        input is provided.
+
+        Parameters
+        ----------
+        batch_size
+            Number of pairs per batch. Default=32.
+        num_turns
+            Number of pairs for each InChiKey14 during each epoch. Default=1
+        shuffle
+            Set to True to shuffle IDs every epoch. Default=True
+        ignore_equal_pairs
+            Set to True to ignore pairs of two identical spectra. Default=True
+        same_prob_bins
+            List of tuples that define ranges of the true label to be trained with
+            equal frequencies. Default is set to [(0, 0.5), (0.5, 1)], which means
+            that pairs with scores <=0.5 will be picked as often as pairs with scores
+            > 0.5.
+        augment_removal_max
+            Maximum fraction of peaks (if intensity < below augment_removal_intensity)
+            to be removed randomly. Default is set to 0.2, which means that between
+            0 and 20% of all peaks with intensities < augment_removal_intensity
+            will be removed.
+        augment_removal_intensity
+            Specifying that only peaks with intensities < max_intensity will be removed.
+        augment_intensity
+            Change peak intensities by a random number between 0 and augment_intensity.
+            Default=0.1, which means that intensities are multiplied by 1+- a random
+            number within [0, 0.1].
+        augment_noise_max
+            Max number of 'new' noise peaks to add to the spectrum, between 0 to `augment_noise_max`
+            of peaks are added.
+        augment_noise_intensity
+            Intensity of the 'new' noise peaks to add to the spectrum
+        use_fixed_set
+            Toggles using a fixed dataset, if set to True the same dataset will be generated each
+            epoch. Default is False.
+        random_seed
+            Specify random seed for reproducible random number generation.
+        additional_inputs
+            Array of additional values to be used in training for e.g. ["precursor_mz", "parent_mass"]
+        """
+        defaults = {
+            "batch_size": 32,
+            "num_turns": 1,
+            "ignore_equal_pairs": True,
+            "shuffle": True,
+            "same_prob_bins": None,
+            "augment_removal_max": 0.3,
+            "augment_removal_intensity": 0.2,
+            "augment_intensity": 0.4,
+            "augment_noise_max": 10,
+            "augment_noise_intensity": 0.01,
+            "use_fixed_set": False,
+            "random_seed": None,
+        }
+
+        # Set default parameters or replace by **settings input
+        for key, value in defaults.items():
+            if key in settings:
+                print(f"The value for {key} is set from {value} (default) to {settings[key]}")
+            else:
+                settings[key] = defaults[key]
+                
+        assert 0.0 <= settings["augment_removal_max"] <= 1.0, "Expected value within [0,1]"
+        assert 0.0 <= settings["augment_removal_intensity"] <= 1.0, "Expected value within [0,1]"
+        if settings["use_fixed_set"] and settings["shuffle"]:
+            warnings.warn('When using a fixed set, data will not be shuffled')
+        if settings["random_seed"] is not None:
+            assert isinstance(settings["random_seed"], int), "Random seed must be integer number."
+            np.random.seed(settings["random_seed"])
+        self.settings = settings
+        
+        self.curr_batch = 0
+        self.curr_index = 0
+        self.curr_batch_size = 0
 
 class DataGeneratorCherrypickedInChi(DataGeneratorBase):
     """Generates data for training a siamese Keras model.
@@ -205,7 +468,7 @@ class DataGeneratorCherrypickedInChi(DataGeneratorBase):
     
     def __len__(self):
         return int(self.settings['num_turns'])\
-            * int(np.floor(len(self.selected_compound_pairs.pairs.keys()) / self.settings['batch_size']))
+            * int(np.floor(len(self.selected_compound_pairs.inchikeys) / self.settings['batch_size']))
 
     def _get_spectrum_with_spectrumid(self, spectrumid: str):
         """
@@ -246,7 +509,7 @@ class DataGeneratorCherrypickedInChi(DataGeneratorBase):
         # raise StopIteration()
         
         batch_size = self.settings['batch_size']
-        indexes = np.arange(len(self.selected_compound_pairs.pairs.keys()))
+        indexes = np.arange(len(self.selected_compound_pairs.inchikeys))
         indexes = indexes[batch_index * batch_size:(batch_index + 1) * batch_size]
         
         # Safety to ensure the loop terminates
@@ -260,7 +523,7 @@ class DataGeneratorCherrypickedInChi(DataGeneratorBase):
             else:
                 out = self.selected_compound_pairs.next_pair_for_inchikey(inchikey1)
             self.curr_index += 1
-            if self.curr_index >= len(self.selected_compound_pairs.pairs.keys()):
+            if self.curr_index >= len(self.selected_compound_pairs.inchikeys):
                 # If we fail to create a batch, just loop over to the front of the inchikeys
                 # Because during training we will loop over the dataset multiple times, with random ordering
                 # this shouldn't cause an issues in the limit
@@ -277,8 +540,9 @@ class DataGeneratorCherrypickedInChi(DataGeneratorBase):
                 self.curr_batch_size += 1
                 yield SpectrumPair(spectrum1, spectrum2, score)
         if attempt >= max_attempts:
-            raise StopIteration()
-                
+            raise StopIteration("Unable to find a match in range.")
+     
+    @profile           
     def __getitem__(self, batch_index: int):
         """Generate one batch of data.
 
@@ -289,6 +553,7 @@ class DataGeneratorCherrypickedInChi(DataGeneratorBase):
             return self.fixed_set[batch_index]
         self.curr_batch_size = 0
         spectrum_pairs = self._spectrum_pair_generator(batch_index)
+        
         X, y = self._data_generation(spectrum_pairs)
         if self.settings['use_fixed_set']:
             # Store batches for later epochs

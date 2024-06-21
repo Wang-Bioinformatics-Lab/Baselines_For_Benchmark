@@ -2,6 +2,7 @@ import argparse
 import matchms
 from glob import glob
 import os
+import pyteomics.mgf as py_mgf
 
 from matchms.importing import load_from_mgf
 
@@ -53,7 +54,21 @@ def main():
         if not os.path.isdir(args.output_dir):
             os.makedirs(args.output_dir)
         print("Saving file:", args.output_dir + "/" + path.split("/")[-1])
-        matchms.exporting.save_as_mgf(spectra_positive, args.output_dir + "/" + path.split("/")[-1])
+        # matchms.exporting.save_as_mgf(spectra_positive, args.output_dir + "/" + path.split("/")[-1])
+        
+        # For some reason matchms.exporting.save_as_mgf will only output one spectra
+        # This is a workaround for that code, but the above line should be used once working
+        output_path = args.output_dir + "/" + path.split("/")[-1]
+        def output_gen():
+            for spectrum in spectra_positive:
+                spectrum_dict = {"m/z array": spectrum.peaks.mz,
+                                    "intensity array": spectrum.peaks.intensities,
+                                    "params": spectrum.metadata}
+                if 'fingerprint' in spectrum_dict["params"]:
+                    del spectrum_dict["params"]["fingerprint"]
+                yield spectrum_dict
+        py_mgf.write(output_gen(), output_path, file_mode="w")
+
     
 if __name__ == "__main__":
     main()

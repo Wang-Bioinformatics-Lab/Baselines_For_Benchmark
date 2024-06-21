@@ -1,4 +1,5 @@
 from pathlib import Path
+from glob import glob
 import os
 import gc
 import sys
@@ -21,11 +22,14 @@ from ms2deepscore.models import SiameseModel
 from ms2deepscore import MS2DeepScore
 from ms2deepscore.models import load_model
 
+from tqdm import tqdm
+
 sys.path.append('../shared')
 from utils import train_test_similarity_dependent_losses, \
                     tanimoto_dependent_losses, \
                     train_test_similarity_heatmap, \
-                    train_test_similarity_bar_plot
+                    train_test_similarity_bar_plot, \
+                    fixed_tanimoto_train_test_similarity_dependent
                     
 plt.rcParams.update({
     "text.usetex": False,
@@ -47,50 +51,68 @@ def main():
     parser.add_argument("--tanimoto_path", type=str, help="Path to the tanimoto scores")
     parser.add_argument("--train_test_similarities", type=str, help="Path to the train-test tanimoto scores")
     parser.add_argument("--save_dir", type=str, help="Path to the model")
-    parser.add_argument("--n_most_recent", type=int, help="Number of most recent models to evaluate", default=1)
-    parser.add_argument("--pairs_path", type=str, default=None, help="Path to the pairs file")
+    parser.add_argument("--model_path", type=str, help="Path to the model, overrides n_most_recent", default=None)
+    parser.add_argument("--save_dir_insert", type=str, help="Appended to save dir, to help organize test sets", default="")
+    parser.add_argument("--n_most_recent", type=int, help="Number of most recent models to evaluate", default=None)
+    parser.add_argument("--test_pairs_path", type=str, default=None, help="Path to the test pairs file")
+    parser.add_argument("--train_pairs_path", type=str, default=None, help="Path to the train pairs file")
     args = parser.parse_args()
     
-    if not os.path.isdir(args.save_dir):
-        os.makedirs(args.save_dir, exist_ok=True)
+    # # Check if it's a file
+    # if not os.path.isfile(args.test_path):
+    #     if not os.path.isdir(args.save_dir):
+    #         os.makedirs(args.save_dir, exist_ok=True)
+    # else:
+    #     # Get without extention    
+    #     if not os.path.isdir(os.path.join(Path(args.save_dir).parent, Path(args.save_dir).stem)):
+    #         os.makedirs(os.path.join(Path(args.save_dir).parent, Path(args.save_dir).stem), exist_ok=True)
     
     # Check if GPU is available
     print("GPU is", "available" if tf.config.list_physical_devices('GPU') else "NOT AVAILABLE", flush=True)
     
-    
+    n_most_recent = args.n_most_recent
     # List available models
     print("Available models:")
-    available_models = [model for model in Path(args.save_dir).rglob("*.hdf5")]
+    if args.n_most_recent is None:
+        available_models = [Path(args.model_path)]
+        assert os.path.isfile(available_models[0]), f"Model path {available_models[0]} is not a file."
+        n_most_recent = 1
+    else:
+        available_models = [model for model in Path(args.save_dir).rglob("*.hdf5")][:n_most_recent]
     print(available_models)
     
-    print(f"The most recent {args.n_most_recent} models will be evaluated.")
+    print(f"The most recent {n_most_recent} models will be evaluated.")
     
     # Sort models by datetime:  dd_mm_yyyy_hh_mm_ss format "%d_%m_%Y_%H_%M_%S"
     available_models = sorted(available_models, key=lambda x: datetime.strptime(x.stem.split('model_')[1], "%d_%m_%Y_%H_%M_%S"), reverse=True)
     
     
-    print("Testing the following models:", available_models[:args.n_most_recent], flush=True)
-    for model_index, model_name in enumerate(available_models[:args.n_most_recent]):
-        print(f"Loading model ({model_index+1}/{min(len(available_models), args.n_most_recent)}: {model_name.stem})...", flush=True)
+    print("Testing the following models:", available_models[:n_most_recent], flush=True)
+    for model_index, model_name in enumerate(available_models[:n_most_recent]):
+        print(f"Loading model ({model_index+1}/{min(len(available_models), n_most_recent)}: {model_name.stem})...", flush=True)
         model = load_model(model_name)
         print("\tDone.", flush=True)
 
         spectra_test = pickle.load(open(args.test_path, "rb"))
                 
-        if args.pairs_path is not None:
-            print(f"Filtering spectra based on pairs in {args.pairs_path}")
+        if args.test_pairs_path is not None:
+            print(f"Filtering spectra based on pairs in {args.test_pairs_path}")
             print(f"Began with {len(spectra_test)} spectra, which corresponds to {len(np.unique([s.get('inchikey')[:14] for s in spectra_test]))} unique InChI Keys")
-            pairs_df = pd.read_csv(args.pairs_path)
+            pairs_df = pd.read_feather(args.test_pairs_path)
             valid_spectra_ids = np.unique(pairs_df[['spectrum_id_1', 'spectrum_id_2']].values)
             spectra_test = [s for s in spectra_test if s.get('spectrum_id') in valid_spectra_ids]
             print(f"Ended with {len(spectra_test)} spectra, which corresponds to {len(np.unique([s.get('inchikey')[:14] for s in spectra_test]))} unique InChI Keys")
         
         tanimoto_df = pd.read_csv(args.tanimoto_path, index_col=0)
         train_test_similarities = pd.read_csv(args.train_test_similarities, index_col=0)
-        if args.pairs_path is not None:
-            metric_dir = os.path.join(args.save_dir, model_name.stem, 'metrics_filtered_pairs')
+        if args.test_pairs_path is not None:
+            metric_dir = os.path.join(args.save_dir, model_name.stem, 'metrics_filtered_pairs', args.save_dir_insert)
         else:
+            if args.save_dir_insert != "":
+                raise ValueError("--save_dir_insert should only be provieded for filtered pairs")
             metric_dir = os.path.join(args.save_dir, model_name.stem, 'metrics')
+            
+        print("Saving Metrics to:", metric_dir)
         if not os.path.isdir(metric_dir):
             os.makedirs(metric_dir, exist_ok=True)
         print(tanimoto_df)
@@ -111,7 +133,7 @@ def main():
         inchikey_idx_test = np.zeros(len(spectra_test))
         ordered_prediction_index = np.zeros(len(spectra_test))
         
-        for i, spec in enumerate(spectra_test):
+        for i, spec in enumerate(tqdm(spectra_test)):
             try:
                 inchikey_idx_test[i] = np.where(tanimoto_df.index.values == spec.get("inchikey")[:14])[0].item()
             except ValueError as value_error:
@@ -129,7 +151,7 @@ def main():
 
         print("Shape of predictions:", predictions.shape)
         predictions = predictions.iloc[ordered_prediction_index, ordered_prediction_index]
-        if args.pairs_path is not None:
+        if args.test_pairs_path is not None:
             print("Shape of predictions after filtering:", predictions.shape)
 
 
@@ -147,8 +169,8 @@ def main():
         predictions['spectrum_id_2'] = pd.Categorical(predictions['spectrum_id_2'])
         
         # Only get valid pairs
-        if args.pairs_path is not None:
-            pairs_df = pd.read_csv(args.pairs_path)
+        if args.test_pairs_path is not None:
+            pairs_df = pd.read_feather(args.test_pairs_path)
 
             # Create sets of the pairs
             pair_set = set(map(tuple, pairs_df[['spectrum_id_1', 'spectrum_id_2']].values))
@@ -211,6 +233,14 @@ def main():
             predictions.drop(columns=['inchi_pair'], inplace=True)
             gc.collect()
             
+        if args.train_pairs_path is not None:
+            # We need to remove the spectrum ids from the train-test similarity matrix that are not in train pairs
+            print("Filtering Train-Test Similarity Matrix based on train pairs")
+            train_inchikeys= np.unique(pd.read_feather(args.train_pairs_path)[['inchikey_1','inchikey_2']].values)
+            print(f"Found {len(train_inchikeys)} unique inchikeys in the train pairs")
+            print(f"Found {len(train_test_similarities)} unique inchikeys in the train-test similarity matrix")
+            train_test_similarities = train_test_similarities.loc[train_inchikeys, :]
+            print(f"Filtered to {len(train_test_similarities)} unique inchikeys in the train-test similarity matrix")
         
         # Add the ground_true value to the predictions
         print("Calculating Error")
@@ -240,11 +270,13 @@ def main():
         # del pair_set, reverse_pair_set
         # gc.collect()
         
+        ref_score_bins = np.linspace(0.2,1.0, 17)
+        ### TEMP COMMENTS:
+        
         overall_rmse = np.sqrt(np.mean(np.square(predictions['error'].values)))
         print("Overall RMSE (from evaluate()):", overall_rmse)
         overall_mae =  np.mean(np.abs(predictions['error'].values))
 
-        ref_score_bins = np.linspace(0.2,1.0, 17)
         # Train-Test Similarity Dependent Losses
         similarity_dependent_metrics_mean = train_test_similarity_dependent_losses(predictions, train_test_similarities, ref_score_bins, mode='mean')
         similarity_dependent_metrics_max = train_test_similarity_dependent_losses(predictions, train_test_similarities, ref_score_bins, mode='max')
@@ -319,9 +351,15 @@ def main():
         metric_dict["rmse"] = overall_rmse
         metric_dict["mae"]  = overall_mae
         
+        # Fixed-Tanimoto, Train-Test Dependent Plot
+        ref_score_bins = np.linspace(0,1.0, 11)
+        ftttsd = fixed_tanimoto_train_test_similarity_dependent(predictions, train_test_similarities, ref_score_bins)
+        
         # Save to pickle
         metric_path = os.path.join(metric_dir, "metrics.pkl")
         print(f"Saving metrics to {metric_path}")
+        fixed_tanimoto_train_test_similarity_dependent_path = os.path.join(metric_dir, "fixed_tanimoto_train_test_similarity_dependent_path.pkl")
+        pickle.dump(ftttsd, open(fixed_tanimoto_train_test_similarity_dependent_path, "wb"))
         pickle.dump(metric_dict, open(metric_path, "wb"))
         train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_mean.pkl")
         pickle.dump(similarity_dependent_metrics_mean, open(train_test_metric_path, "wb"))

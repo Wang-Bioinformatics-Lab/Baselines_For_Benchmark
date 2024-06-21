@@ -187,11 +187,11 @@ def enrich_pair_dict(df, spectrum_mapping, no_cosine=False)->pd.DataFrame:
         return score['score'].astype('float16'), score['matches']
 
     print("Enriching dataframe...", flush=True)
+    
+    df['structural_similarity'] = df.p_apply(lambda x: _compute_structural_similarity(spectrum_mapping[x['spectrum_id_1']], spectrum_mapping[x['spectrum_id_2']]), axis=1).astype('float16')
     # Add columns inchikey_1, inchikey_2
     df['inchikey_1'] = df['spectrum_id_1'].map(lambda x: spectrum_mapping[x].metadata['inchikey'][:14]).astype('category')
     df['inchikey_2'] = df['spectrum_id_2'].map(lambda x: spectrum_mapping[x].metadata['inchikey'][:14]).astype('category')
-    
-    df['structural_similarity'] = df.p_apply(lambda x: _compute_structural_similarity(spectrum_mapping[x['spectrum_id_1']], spectrum_mapping[x['spectrum_id_2']]), axis=1).astype('float16')
     if no_cosine:
         print("Skipping cosine similarity computation")
         return df
@@ -220,7 +220,56 @@ def enrich_pair_dict(df, spectrum_mapping, no_cosine=False)->pd.DataFrame:
     
     # return df
 
-def generate_pairs(spectra:list, output_feather_path:str, prune:bool=False, no_cosine:bool=False):
+def reduce_spectra(spectrum_df, pre_filter_count):
+    """
+    Reduces the number of spectra in the given DataFrame to a specified count per inchikey.
+
+    Parameters:
+    spectrum_df (pd.DataFrame): The DataFrame containing the spectra data. Must have a column named 'inchikey'.
+    pre_filter_count (int): The maximum number of spectra to keep per inchikey. Must be a positive integer.
+
+    Returns:
+    pd.DataFrame: The filtered DataFrame with at most `pre_filter_count` spectra per 'inchikey'.
+    
+    Notes:
+    - If `pre_filter_count` is None, the function will return the original DataFrame.
+    - If `pre_filter_count` is not a positive integer, the function will print an error message and return the original DataFrame.
+    - The function prints the original and new lengths of the DataFrame before and after filtering.
+    - If the filtering operation fails, the function will print an error message and return the original DataFrame.
+    - If the filtering operation does not reduce the number of spectra, a warning message will be printed.
+    """
+    if pre_filter_count is not None:
+        if not isinstance(pre_filter_count, int) or pre_filter_count <= 0:
+            print("Error: pre_filter_count must be a positive integer", flush=True)
+            return spectrum_df
+
+        print(f"Reducing the number of spectra to {pre_filter_count} per inchikey...", flush=True)
+        original_length = len(spectrum_df)
+        print(f"Original Length: {original_length}", flush=True)
+
+        try:
+            spectrum_df = spectrum_df.groupby('inchikey', observed=False).head(pre_filter_count).reset_index(drop=True)
+        except Exception as e:
+            print(f"Error during filtering: {e}", flush=True)
+            return spectrum_df
+
+        new_length = len(spectrum_df)
+        print(f"New Length: {new_length}", flush=True)
+        
+        if original_length == new_length:
+            print("Warning: The filtering did not reduce the number of spectra.", flush=True)
+        
+    return spectrum_df
+
+def generate_pairs(spectra:list, 
+                   output_feather_path:str, 
+                   prune:bool=False, 
+                   no_cosine:bool=False, 
+                   merge_on_lst:list=None,
+                   mass_analyzer_lst:list=None,
+                   collision_energy_thresh:float=5.0,
+                   skip_precursor_mz=False,
+                   pre_filter_count=None)->None:
     """ This function takes a list of matchms.Spectrum objects whose metadata contains
     'ms_mass_analyzer', and 'ms_ionisation' keys. It generates a feather file with all possible
     pairs of spectra whose mass analyzer and ionisation match.
@@ -229,6 +278,13 @@ def generate_pairs(spectra:list, output_feather_path:str, prune:bool=False, no_c
     - spectra: list of matchms.Spectrum objects
     - output_feather_path: str, path to the output feather file
     - prune: bool, whether to remove duplicate structures
+    - merge_on_lst: list of str, the criteria to filter pairs by. Can include 'adduct', 'ms_mass_analyzer', and 'ms_ionisation'.
+                    Defaults to None, in which case all three are used.
+    - mass_analyzer_lst: list of str, required mass analyzer to be included in output (e.g., 'tof', 'orbitrap', and 'qtof'). 
+                            Defaults to None, in which case all mass analyzers are allowed.
+    - collision_energy_thresh: float, maximum difference in collision energy to be considered a pair. If not collision energy is available
+                                for either spectrum, the pair is included. If "-1.0" is specified, the criteria is no considered. Default is 5.0.
+    - skip_precursor_mz: bool, whether to skip the precursor mz requirement. Default is False.
     
     Returns:
     None
@@ -243,30 +299,28 @@ def generate_pairs(spectra:list, output_feather_path:str, prune:bool=False, no_c
     filtered_by_no_ce = 0
     filtered_by_mismatched_ce = 0
     
+    if merge_on_lst is not None:
+        for x in merge_on_lst:
+            assert x in ['ms_mass_analyzer', 'ms_ionisation', 'adduct', 'library']
+    else:
+        merge_on_lst = ['ms_mass_analyzer', 'ms_ionisation', 'adduct']
+        
+    print("Using the following criteria for pairs:", merge_on_lst)
+
+    if mass_analyzer_lst is not None:
+        mass_analyzer_lst = set(mass_analyzer_lst)
+        print("Only including the following mass analyzers", mass_analyzer_lst)
+    
     # TEMP
     # Get unique structures only
     # spectra = {s.metadata.get('inchikey')[:14]: s for s in spectra}
     # spectra = list(spectra.values())    
     
-    # Filter spectra
+    # Filter spectra for Cosine
     # spectra = [remove_peaks_around_precursor_mz(s, 17) for s in spectra]
     # spectra = [remove_peaks_outside_top_k(s, k=6, mz_window=25) for s in spectra]
     # spectra = [x for x in spectra if x is not None]
     spectra = [remove_peaks_around_precursor_mz(s, 0.1) for s in spectra]
-    
-    
-    # TEMP:
-    # Add collision energy to the spectra
-    import numpy as np
-    # test
-    # metadata = pd.read_feather('/data/nas-gpu/SourceCode/michael_s/Baselines_For_Benchmark/data/structural_similarity/raw/test_rows.feather')
-    # # train
-    # # metadata = pd.read_feather('/data/nas-gpu/SourceCode/michael_s/Baselines_For_Benchmark/data/structural_similarity/raw/train_rows.feather')
-    # for spectrum in spectra:
-    #     ce = metadata.loc[metadata['spectrum_id'] == spectrum.metadata['spectrum_id'], 'collision_energy'].values[0]
-    #     if not np.isnan(ce):
-    #         spectrum.set('collision_energy', ce)
-    #         # print(ce)
         
     # Create a dataframe with the metadata and spectrum objects
     spectrum_df = pd.DataFrame([{'spectrum_id': s.metadata['spectrum_id'],
@@ -275,70 +329,52 @@ def generate_pairs(spectra:list, output_feather_path:str, prune:bool=False, no_c
                                 'adduct': s.metadata['adduct'], 
                                 'collision_energy': s.metadata.get('collision_energy'), 
                                 'precursor_mz': s.metadata.get('precursor_mz'), 
-                                } for s in spectra])
+                                'library': s.metadata.get('library_membership'),
+                                'inchikey': s.metadata.get('inchikey')[:14],
+                                } for s in spectra],)
+    
+    if 'library' not in merge_on_lst:
+        # Drop the column to save memory
+        spectrum_df = spectrum_df.drop(columns=['library'])
+    else:
+        # Cast to category to save memory
+        spectrum_df.library = spectrum_df.library.astype('category')
     
     spectrum_df.collision_energy = spectrum_df.collision_energy.astype('float16')
 
     # Remove everything without a ms_mass_analyzer, ms_ionisation
-    print("Removing Spectra Without Mass Analyzer or Ionisation...", flush=True)
-    print("Original Length: ", len(spectrum_df))
-    spectrum_df = spectrum_df.dropna(subset=['ms_mass_analyzer', 'ms_ionisation'])
-    print("New Length: ", len(spectrum_df))
+    if 'ms_mass_analyzer' in merge_on_lst:
+        print("Removing Spectra Without Mass Analyzer...", flush=True)
+        print("Original Length: ", len(spectrum_df))
+        spectrum_df = spectrum_df.dropna(subset=['ms_mass_analyzer'])
+        print("New Length: ", len(spectrum_df))
+    if 'ms_ionisation' in merge_on_lst:
+        print("Removing Spectra Without Ionisation...", flush=True)
+        print("Original Length: ", len(spectrum_df))
+        spectrum_df = spectrum_df.dropna(subset=['ms_ionisation'])
+        print("New Length: ", len(spectrum_df))
+    
+    print(spectrum_df)
+    spectrum_df = reduce_spectra(spectrum_df, pre_filter_count)
+    print(spectrum_df)
     
     # Cast columns to categorical to save memory
     spectrum_df['adduct'] = spectrum_df['adduct'].astype('category')
-    spectrum_df['ms_mass_analyzer'] = spectrum_df['ms_mass_analyzer'].astype('category')
+    spectrum_df['ms_mass_analyzer'] = spectrum_df['ms_mass_analyzer'].str.lower().astype('category')    # Set mass analyzer to lower for filtering
     spectrum_df['ms_ionisation'] = spectrum_df['ms_ionisation'].astype('category')
-
-    spectrum_df = spectrum_df.groupby(['ms_mass_analyzer', 'ms_ionisation', 'adduct'], observed=True)
+    spectrum_df['inchikey'] = spectrum_df['inchikey'].astype('category')
     
-    # print("Generating pairs...", flush=True)
-    # def generate_pair(spec1, spec2):
-    #     errors = []
-    #     if spec1.metadata.get('ms_mass_analyzer', -20) != spec2.metadata.get('ms_mass_analyzer', -21):
-    #         errors.append("Filtered by mass analyzer")
-    #     if spec1.metadata.get('ms_ionisation', -20) != spec2.metadata.get('ms_ionisation', -21):
-    #         errors.append("Filtered by ionisation")
-    #     if spec1.metadata.get('adduct', -20) != spec2.metadata.get('adduct', -21):
-    #         errors.append("Filtered by adduct")
-    #     # From "Comparison of Cosine, Modified Cosine, and Neutral Loss..."
-    #     if abs(spec1.metadata['precursor_mz'] - spec2.metadata['precursor_mz']) > 200:
-    #         errors.append("Filtered by precursor mz")
-    #     # if spec1.metadata.get('collision_energy') is None or spec2.metadata.get('collision_energy') is None:
-    #     #     errors.append("Filtered by no collision energy")
-    #     # if spec1.metadata.get('collision_energy', -100) != spec2.metadata.get('collision_energy', -20000):
-    #     #     errors.append("Filtered by mismatched collision energy")
+    # Optionally filter by ms_mass_analyzer
+    if mass_analyzer_lst is not None:
+        print("Filtering by mass analyzer. Starting Value Counts:")
+        print(spectrum_df.ms_mass_analyzer.value_counts())
+        print("Current Spectrum Count:", len(spectrum_df))
+        spectrum_df = spectrum_df.loc[spectrum_df['ms_mass_analyzer'].isin(mass_analyzer_lst)]
+        print("Value Counts After Filtration:")
+        print(spectrum_df.ms_mass_analyzer.value_counts())
+        print("New Spectrum Count:", len(spectrum_df))
 
-    #     if errors:
-    #         return ', '.join(errors)  # Return a string with the error reasons
-    #     else:
-    #         return {'spectrum_id_1': spec1.metadata['spectrum_id'],
-    #                 'spectrum_id_2': spec2.metadata['spectrum_id'],
-    #                 'mass_analyzer': spec1.metadata.get('ms_mass_analyzer', ''),
-    #                 'ionisation': spec1.metadata.get('ms_ionisation','')}
-
-    # print("Generating pairs...", flush=True)
-    # # For each subset of spectra with the same mass analyzer, ionisation, and adduct, generate pairs
-    # output_lst = []
-    # print(f"Total Groups: {len(spectrum_df)}")
-    # def _prec_mz_check(spec1, spec2):
-    #     if abs(spec1.metadata['precursor_mz'] - spec2.metadata['precursor_mz']) < 200:
-    #         return {'spectrum_id_1': spec1.metadata['spectrum_id'],
-    #                                    'spectrum_id_2': spec2.metadata['spectrum_id'],
-    #                                    'mass_analyzer': spec1.metadata.get('ms_mass_analyzer', ''),
-    #                                    'ionisation': spec1.metadata.get('ms_ionisation','')}
-    #     else:
-    #         return None
-    # for _, group in spectrum_df:
-    #     pairs = [[i, j] for i in range(len(group)) for j in range(i+1, len(group))]
-    #     # Split pairs into 1000 jobs to avoid excessive overhead
-    #     chunks = np.array_split(pairs, len(pairs)//1000)
-    #     # Get dataframe for each chunk
-        
-        
-    #     local_list = Parallel(n_jobs=-1)(delayed(_prec_mz_check)(group.iloc[i]['spectrum'], group.iloc[j]['spectrum']) for i, j in tqdm(chunks))
-    #     local_list = [x for x in local_list if x is not None]
-    #     output_lst.extend(local_list)
+    spectrum_df = spectrum_df.groupby(merge_on_lst, observed=False)
         
     print("Generating pairs...", flush=True)
 
@@ -346,26 +382,44 @@ def generate_pairs(spectra:list, output_feather_path:str, prune:bool=False, no_c
     output_lst = []
     print(f"Total Groups: {len(spectrum_df)}")
     
+    if collision_energy_thresh == -1.0:
+        print("Skipping collision energy criteria")
+    if skip_precursor_mz:
+        print("Skipping precursor mz requirement")
+    
+    ## TODO: To save memory, we can write the spectrum_df to a temporary hdfstore and read one group at a time
+    ## TODO: Do this per inchikey?
     for _, group in tqdm(spectrum_df):
         # print(group)
         # Get all pairs with precursor mz difference less than 200 using vectorized operations
-        pairs = group.merge(group, on=['ms_mass_analyzer', 'ms_ionisation', 'adduct'], suffixes=('_1', '_2'))   # Will perform outer product
+        pairs = group.merge(group, on=merge_on_lst, suffixes=('_1', '_2'))   # Will perform outer product
         pairs = pairs.loc[pairs['spectrum_id_1'] < pairs['spectrum_id_2']]                                      # Get upper diagonal
         pairs['precursor_mass_difference'] = (pairs['precursor_mz_1'] - pairs['precursor_mz_2']).abs().astype('float16')
-        pairs = pairs.loc[abs(pairs['precursor_mz_1'] - pairs['precursor_mz_2']) < 200]
-        # If they have collision energy, filter it out if the difference is greater than 5, if they don't just let them through
-        # DEBUG TO SEE IF WE CAN JUST ONLY USE COLLISION ENERGY PAIRS
         org_len = len(pairs)
-        ce_pairs    = pairs.loc[(pairs['collision_energy_1'].notna() & pairs['collision_energy_2'].notna())]
-        ce_pairs    = ce_pairs.loc[(pairs['collision_energy_1'] - ce_pairs['collision_energy_2']).abs() <= 5]
-        other_pairs = pairs.loc[pairs['collision_energy_1'].isna() | pairs['collision_energy_2'].isna()]
-        pairs = pd.concat((ce_pairs, other_pairs))
-        # pairs = ce_pairs
-        new_len = len(pairs)
-        filtered_by_mismatched_ce += org_len - new_len
-        del ce_pairs, other_pairs
+        if not skip_precursor_mz:
+            pairs = pairs.loc[abs(pairs['precursor_mz_1'] - pairs['precursor_mz_2']) < 200]
+            filtered_by_precursor_mz += org_len - len(pairs)
+        # If they have collision energy, filter it out if the difference is greater than 5, if they don't just let them through
+        if collision_energy_thresh != -1.0:
+            org_len = len(pairs)
+            ce_pairs    = pairs.loc[(pairs['collision_energy_1'].notna() & pairs['collision_energy_2'].notna())]
+            ce_pairs    = ce_pairs.loc[(pairs['collision_energy_1'] - ce_pairs['collision_energy_2']).abs() <= collision_energy_thresh]
+            other_pairs = pairs.loc[pairs['collision_energy_1'].isna() | pairs['collision_energy_2'].isna()]
+            pairs = pd.concat((ce_pairs, other_pairs))
+            new_len = len(pairs)
+            filtered_by_mismatched_ce += org_len - new_len
+            del ce_pairs, other_pairs
         
-        output_lst.extend(pairs[['spectrum_id_1', 'spectrum_id_2', 'ms_mass_analyzer', 'ms_ionisation', 'precursor_mass_difference',]].to_dict('records'))
+        # If we have ms_mass_analyzer_1 and ms_mass_analyzer_2, concatenate them with a semicolon
+        if 'ms_mass_analyzer_1' in pairs.columns and 'ms_mass_analyzer_2' in pairs.columns:
+            pairs['ms_mass_analyzer'] = pairs[['ms_mass_analyzer_1', 'ms_mass_analyzer_2']].apply(lambda x: str(x.iloc[0]) + ';' + str(x.iloc[1]), axis=1)
+            pairs['ms_mass_analyzer'] = pairs['ms_mass_analyzer'].astype('category')
+        # If we have ms_ionisation_1 and ms_ionisation_2, concatenate them with a semicolon
+        if 'ms_ionisation_1' in pairs.columns and 'ms_ionisation_2' in pairs.columns:
+            pairs['ms_ionisation'] = pairs[['ms_ionisation_1', 'ms_ionisation_2']].apply(lambda x: str(x.iloc[0]) + ';' + str(x.iloc[1]), axis=1)
+            pairs['ms_ionisation'] = pairs['ms_ionisation'].astype('category')
+        
+        output_lst.extend(pairs[['spectrum_id_1', 'spectrum_id_2', 'ms_mass_analyzer', 'ms_ionisation', 'precursor_mass_difference','inchikey_1','inchikey_2']].to_dict('records'))
         del pairs
         gc.collect()
     
@@ -391,7 +445,7 @@ def generate_pairs(spectra:list, output_feather_path:str, prune:bool=False, no_c
     gc.collect()
     
     # Prune pairs
-    # We want to keep one spectrum id for each structure so we'll count take one with the highest pair count
+    # We want to keep a few spectrum id for each structure so we'll count take ones with the highest pair count
     if prune:
         print("Pruning pairs...", flush=True)
         org_len = len(output_df)
@@ -406,7 +460,7 @@ def generate_pairs(spectra:list, output_feather_path:str, prune:bool=False, no_c
         print(spectrum_counts)
         spectrum_counts.columns = ['spectrum_id', 'count']
         spectrum_counts['inchikey_14'] = spectrum_counts['spectrum_id'].map(spectrum_inchikey14_mapping)
-        spectrum_counts = spectrum_counts.groupby('inchikey_14').apply(lambda x: x.sort_values('count', ascending=False).iloc[0])
+        spectrum_counts = spectrum_counts.groupby('inchikey_14').apply(lambda x: x.sort_values('count', ascending=False).iloc[0:prune])
         
         print(spectrum_counts)
         
@@ -434,8 +488,23 @@ def main():
     parser.add_argument('--input_pickle_path', type=str, help='Input file')
     parser.add_argument('--output_feather_path', type=str, help='Output file')
     parser.add_argument('--summary_plot_dir', type=str, help='Path to the directory where summary plots will be saved', default=None)
-    parser.add_argument('--prune_duplicate_structures', action='store_true', help='Prune duplicate structures', default=False)
+    parser.add_argument('--prune_duplicate_structures', type=int, help='Prune duplicate structures', default=0)
+    parser.add_argument('--pre_filter_count', type=int, help='Maximum count of spectra per structure.', default=None)
     parser.add_argument('--no_cosine', action='store_true', help='Do not compute cosine similarity', default=False)
+    parser.add_argument('--merge_on_lst', type=str, help='A semicolon delimited list of criteria to merge on. \
+                                                            Options are: ["ms_mass_analyzer", "ms_ionisation", "adduct", "library"]',
+                                                    default=None)
+    # To facilitate qtof/tof-orbitrap pairs only
+    parser.add_argument('--mass_analyzer_lst', type=str, default=None,
+                                                help='A semicolon delimited list of allowed mass analyzers. All mass analyzers are \
+                                                      allowed when not specified')
+    # To facilitate no collision energy (CE) criteria
+    parser.add_argument('--collision_energy_thresh', type=float, default=5.0,
+                                                help='The maximum difference between collision energies of two spectra to be considered\
+                                                    a pair. Default is <= 5. "-1.0" means collision energies are not filtered. \
+                                                    If no collision enegy is available for either spectra, both will be included.')
+    parser.add_argument('--no_pm_requirement', action='store_true', help='Do not require precursor mass difference to be less than 200', default=False)
+    
     args = parser.parse_args()
     
     print("Loading spectra...", flush=True)
@@ -448,12 +517,32 @@ def main():
     else:
         raise ValueError("Input file must be a pickle or mgf file")
     
-    generate_pairs(spectra, args.output_feather_path, args.prune_duplicate_structures, args.no_cosine)
+    if args.merge_on_lst is not None:
+        merge_on_lst = args.merge_on_lst.split(';')
+        merge_on_lst = [str(x).strip().lower() for x in merge_on_lst]
+    else:
+        merge_on_lst = None
     
-    if not os.path.exists(args.summary_plot_dir):
-        os.makedirs(args.summary_plot_dir, exist_ok=True)
+    if args.mass_analyzer_lst is not None:
+        mass_analyzer_lst = args.mass_analyzer_lst.split(';')
+        mass_analyzer_lst = [str(x).strip().lower() for x in mass_analyzer_lst]
+    else:
+        mass_analyzer_lst = None
+    
+    collision_energy_thresh = float(args.collision_energy_thresh)
+    
+    generate_pairs(spectra, args.output_feather_path,
+                   prune=args.prune_duplicate_structures,
+                   no_cosine=args.no_cosine,
+                   merge_on_lst=merge_on_lst,
+                   mass_analyzer_lst=mass_analyzer_lst,
+                   collision_energy_thresh=collision_energy_thresh,
+                   skip_precursor_mz=args.no_pm_requirement,
+                   pre_filter_count=args.pre_filter_count)
     
     if args.summary_plot_dir is not None:
+        if not os.path.exists(args.summary_plot_dir):
+            os.makedirs(args.summary_plot_dir, exist_ok=True)
         produce_summary_plots(args.output_feather_path, args.summary_plot_dir, args.no_cosine)
         
 

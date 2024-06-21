@@ -7,8 +7,6 @@ import numpy as np
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
-from ms2deepscore import MS2DeepScore
-
 from matchms.filtering import metadata_processing
 
 from matchms.filtering import select_by_mz, default_filters, add_fingerprint
@@ -37,7 +35,7 @@ def inject_metadata(path, spectra):
     df = pd.read_csv(path)
     
     # We want to get the following columns: Smiles,INCHI,InChIKey_smiles
-    df = df[["spectrum_id","Smiles", "INCHI", "InChIKey_smiles", "collision_energy"]]
+    df = df[["spectrum_id","Smiles", "INCHI", "InChIKey_smiles", "collision_energy", "GNPS_library_membership"]]
     for spectrum in spectra:
         spectrum_id = spectrum.metadata.get("title")
         row = df.loc[df['spectrum_id'] == spectrum_id]
@@ -47,6 +45,7 @@ def inject_metadata(path, spectra):
         inchi = row["INCHI"].values[0]
         inchikey = row["InChIKey_smiles"].values[0]
         collision_energy = row["collision_energy"].values[0]
+        library_membership = row['GNPS_library_membership'].values[0]
         
         # if not isinstance(smiles, str):
         #     print("Smiles is not a string", smiles)
@@ -65,6 +64,9 @@ def inject_metadata(path, spectra):
             spectrum.set("inchikey", inchikey)
         if collision_energy is not None:
             spectrum.set("collision_energy", collision_energy)
+        if library_membership is not None:
+            spectrum.set("library_membership", library_membership)
+        
     
     return spectra
 
@@ -160,6 +162,7 @@ def main():
     # This script will overwrite the test spectra if run for each split, but they're all the same so we'll ignore for now
     parser.add_argument('--test_spectra', type=str, default=None)
     parser.add_argument('--test_metadata', type=str, default=None)
+    parser.add_argument('--skip_validation', action='store_true')
     parser.add_argument('--save_dir', type=str)
 
     args = parser.parse_args()
@@ -274,13 +277,17 @@ def main():
 
     # Select training, validation, and test IDs:
     # We'll take 500 inchikeys for validation
-    n_val = 500
-    valIDs = list(set(np.random.choice(list(set(inchikey_ids)), n_val, replace=False)))
-    trainIDs = list(set(inchikey_ids)  - set(valIDs))
+    if not args.skip_validation:
+        n_val = 500
+        valIDs = list(set(np.random.choice(list(set(inchikey_ids)), n_val, replace=False)))
+        trainIDs = list(set(inchikey_ids)  - set(valIDs))
+    else:
+        trainIDs = list(set(inchikey_ids))
     
     # quick check to see if there's indeed no overlap
     for idx in trainIDs:
-        assert not (idx in valIDs), f"Found overlap for ID {idx}"
+        if not args.skip_validation:
+            assert not (idx in valIDs), f"Found overlap for ID {idx}"
         assert not (idx in testIDs), f"Found overlap for ID {idx}"
     
     inchikeys14_training = train_tanimoto_df.index.to_numpy()[trainIDs]
@@ -288,10 +295,11 @@ def main():
     spectrums_training = [s for s in spectrums_pos_processing if s.get("inchikey")[:14] in inchikeys14_training]
     print(f"{len(spectrums_training)} spectrums in training data")
 
-    inchikeys14_val = train_tanimoto_df.index.to_numpy()[valIDs]
+    if not args.skip_validation:
+        inchikeys14_val = train_tanimoto_df.index.to_numpy()[valIDs]
 
-    spectrums_val = [s for s in spectrums_pos_processing if s.get("inchikey")[:14] in inchikeys14_val]
-    print(f"{len(spectrums_val)} spectrums in validation data.")
+        spectrums_val = [s for s in spectrums_pos_processing if s.get("inchikey")[:14] in inchikeys14_val]
+        print(f"{len(spectrums_val)} spectrums in validation data.")
 
     # inchikeys14_test = test_tanimoto_df.index.to_numpy()
 
@@ -313,7 +321,10 @@ def main():
 
     print(f"{len(test_spectra)} spectrums in test data.")
 
-    spectrums_wo_test = spectrums_training + spectrums_val
+    if args.skip_validation:
+        spectrums_wo_test = spectrums_training
+    else:
+        spectrums_wo_test = spectrums_training + spectrums_val
     print(f"{len(spectrums_wo_test)} spectrums in data w/o test")
 
     data_save_path = os.path.join(args.save_dir, "data")
@@ -328,8 +339,9 @@ def main():
     pickle.dump(spectrums_training, 
                 open(os.path.join(data_save_path,'ALL_GNPS_positive_train_split.pickle'), "wb"))
 
-    pickle.dump(spectrums_val, 
-                open(os.path.join(data_save_path,'ALL_GNPS_positive_val_split.pickle'), "wb"))
+    if not args.skip_validation:
+        pickle.dump(spectrums_val, 
+                    open(os.path.join(data_save_path,'ALL_GNPS_positive_val_split.pickle'), "wb"))
 
     pickle.dump(test_spectra, 
                 open(os.path.join(data_save_path,'ALL_GNPS_positive_test_split.pickle'), "wb"))

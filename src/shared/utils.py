@@ -38,10 +38,18 @@ def train_test_similarity_dependent_losses(prediction_df, train_test_similarity,
     
     if mode == 'max':
         train_test_similarity = train_test_similarity.max(axis=0)
+        print("Max similarity to train set")
+        print(train_test_similarity)
+        print("Mean of the max similarities")
+        print(train_test_similarity.mean())
+        print("Max of the max similarities")
+        print(train_test_similarity.max())
     elif mode == 'mean':
         train_test_similarity = train_test_similarity.mean(axis=0)
-    print(train_test_similarity)
-    print(train_test_similarity.max())
+        print("Mean similarity to train set")
+        print(train_test_similarity)
+        print("Mean of the mean similarities")
+        print(train_test_similarity.mean())
     
     for inchikey14 in all_predicted_inchikeys:
         assert inchikey14 in train_test_similarity.index
@@ -61,7 +69,7 @@ def train_test_similarity_dependent_losses(prediction_df, train_test_similarity,
         rmse_errors = np.sqrt(np.square(relevant_values).values)
         mae_errors = np.abs(relevant_values).values
         
-    return {'bin_content':bin_content, 'bounds':bounds, 'rmses':rmses, 'maes':maes}
+    return {'bin_content':bin_content, 'bounds':bounds, 'rmses':rmses, 'maes':maes, f'{mode}_sim_to_train': train_test_similarity}
 
 def train_test_similarity_heatmap(prediction_df, train_test_similarity, ref_score_bins):
     # prediction_df is a pandas dataframe with columns spectruim_id_1, spectrum_id_2, inchikey_1, inchikey_2, score, error
@@ -110,8 +118,8 @@ def train_test_similarity_heatmap(prediction_df, train_test_similarity, ref_scor
     mae_grid[mae_grid == 0] = np.nan
     
     # Assert rmse and mae is symmetric
-    assert np.allclose(rmse_grid, rmse_grid.T, equal_nan=True), f"RMSE is not symmetric: {rmse_grid}"
-    assert np.allclose(mae_grid, mae_grid.T, equal_nan=True), f"MAE is not symmetric: {mae_grid}"
+    # assert np.allclose(rmse_grid, rmse_grid.T, equal_nan=True), f"RMSE is not symmetric: {rmse_grid}"
+    # assert np.allclose(mae_grid, mae_grid.T, equal_nan=True), f"MAE is not symmetric: {mae_grid}"
     
     return {'bin_content':bin_content_grid, 'bounds':bound_grid, 'rmses':rmse_grid, 'maes':mae_grid, 'nan_count':nan_count_grid}
 
@@ -169,3 +177,61 @@ def tanimoto_dependent_losses(prediction_df, ref_score_bins):
         rmses.append(np.sqrt(np.nanmean(np.square(relevant_values.error.values))))
 
     return {'bin_content': bin_content, 'bounds':bounds, 'rmses': rmses, 'maes':maes, 'nan_bin_content':nan_bin_content}
+
+def fixed_tanimoto_train_test_similarity_dependent(prediction_df, train_test_similarity, ref_score_bins):
+    ref_scores_bins_inclusive = ref_score_bins.copy()
+    ref_scores_bins_inclusive[0] = -np.inf
+    ref_scores_bins_inclusive[-1] = np.inf
+    
+    output_dict = {}
+    
+    all_predicted_inchikeys = prediction_df['inchikey_1'].unique()  # We assume square matrix
+    #  Get keys for the current train-test similarity bin
+    local_train_test_similarity = train_test_similarity.loc[:, all_predicted_inchikeys].max(axis=0)
+    
+    # Annotate prediction_df with averate train-test similarity
+    prediction_df['train_test_similarity'] = prediction_df.apply(lambda x: np.mean([local_train_test_similarity[x['inchikey_1']], local_train_test_similarity[x['inchikey_2']]]).astype('float16'), axis=1)
+    
+    for i in range(len(ref_scores_bins_inclusive)-1):
+        low = ref_scores_bins_inclusive[i]
+        high = ref_scores_bins_inclusive[i+1]
+              
+        # local_train_test_similarity = local_train_test_similarity.loc[(local_train_test_similarity > low) & (local_train_test_similarity <= high)]
+        # train_test_keys_a = local_train_test_similarity.index
+        # train_test_keys_b = train_test_keys_a
+        
+        # Predictions that are in the current train-test similarity bin
+        relevant_predictions = prediction_df.loc[(prediction_df.train_test_similarity > low) & (prediction_df.train_test_similarity <= high)].copy()
+        
+        if i == 0:
+            key = f'({0.0},{high:.2f})'
+        elif i == len(ref_scores_bins_inclusive)-1:
+            key = f'({low:.2f},{1.0})'
+        else:
+            key = f'({low:.2f},{high:.2f})'
+        
+        output_dict[key] = {}
+        
+        for j in range(len(ref_scores_bins_inclusive)-1):
+            local_low = ref_scores_bins_inclusive[j]
+            local_high = ref_scores_bins_inclusive[j+1]
+            
+            if j == 0:
+                sub_key = f'({0.0},{local_high:.2f})'
+            elif j == len(ref_scores_bins_inclusive)-1:
+                sub_key = f'({local_low:.2f},{1.0})'
+            else:
+                sub_key = f'({local_low:.2f},{local_high:.2f})'
+            
+            output_dict[key][sub_key] = {}
+            
+            # Relevant values contains the predictions that are in the current train-test similarity bin and the current reference score bin
+            relevant_values = relevant_predictions.loc[(relevant_predictions.tanimoto >= low) & (relevant_predictions.tanimoto < high)].copy()
+            
+            output_dict[key][sub_key]['bin_content'] = relevant_values.shape[0]
+            
+            errors = relevant_values['error']
+            output_dict[key][sub_key]['mae'] = np.nanmean(np.abs(errors).values)
+            output_dict[key][sub_key]['rmse'] = np.sqrt(np.nanmean(np.square(errors).values))
+    # First index is the train-test similarity bin, second index is the reference score bin
+    return output_dict

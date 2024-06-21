@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from matchms import calculate_scores
 from matchms.similarity import ModifiedCosine
+from matchms.filtering import remove_peaks_around_precursor_mz
 import pickle
 import matplotlib.pyplot as plt
 from glob import glob
@@ -63,7 +64,7 @@ def spec2vec_percentile_plot(scoring_df:pd.DataFrame,metric_dir)->None:
     None
     """
     
-    plt.figure()
+    plt.figure(figsize=(9,7))
     # Remove identical spectrum ids to avoid self-comparison
     scoring_df = scoring_df.loc[scoring_df['spectrum_id_1'] != scoring_df['spectrum_id_2']]
     # Calculate top N before removing NaNs
@@ -72,70 +73,72 @@ def spec2vec_percentile_plot(scoring_df:pd.DataFrame,metric_dir)->None:
     
     #### spec2vec ####
     # Remove NaNs
-    scoring_df_copy = scoring_df[~scoring_df['score'].isna()].copy(deep=True)
-    
-    top_n_scores = scoring_df_copy['score'].nlargest(top_n).sort_values(ascending=False)
-    top_n_score_idx = top_n_scores.index
-    top_n_scores = top_n_scores.values
-    
-    top_n_reference = scoring_df_copy.loc[top_n_score_idx, 'tanimoto'].values
-    print(top_n_reference)
-    
-    # Bin the top_n_scores into 10 bins
-    hist, bin_edges = np.histogram(top_n_scores, bins=10)
-    # Flip hist, bin edges so the highest similarity is on the left
-    hist = np.flip(hist)
-    bin_edges = np.flip(bin_edges)
-    
-    # Using the bins generated, get the average reference score for each bin
-    avg_reference = np.zeros(10)
-    for i in range(10):
-        bin_indices = np.where((top_n_scores < bin_edges[i]) & (top_n_scores >= bin_edges[i+1]))[0]
-        avg_reference[i] = np.mean(top_n_reference[bin_indices])
+    if 'score' in scoring_df.columns:
+        scoring_df_copy = scoring_df[~scoring_df['score'].isna()].copy(deep=True)
         
-    # print("BIN EDGES",bin_edges)
-    # print("AVG REFERENCE", avg_reference)
+        top_n_scores = scoring_df_copy['score'].sort_values(ascending=False)[:top_n]
+        top_n_score_idx = top_n_scores.index
+        top_n_scores = top_n_scores.values
+        
+        top_n_reference = scoring_df_copy.loc[top_n_score_idx, 'tanimoto'].values
+        print(top_n_reference)
+        
+        # Bin the top_n_scores into 10 bins
+        hist, bin_edges = np.histogram(top_n_scores, bins=10)
+        # Flip hist, bin edges so the highest similarity is on the left
+        hist = np.flip(hist)
+        bin_edges = np.flip(bin_edges)
+        
+        # Using the bins generated, get the average reference score for each bin
+        avg_reference = np.zeros(10)
+        for i in range(10):
+            bin_indices = np.where((top_n_scores < bin_edges[i]) & (top_n_scores >= bin_edges[i+1]))[0]
+            avg_reference[i] = np.mean(top_n_reference[bin_indices])
+            
+        # print("BIN EDGES",bin_edges)
+        # print("AVG REFERENCE", avg_reference)
 
-    # Generate the correct bins for plotting
-    bins_for_bar = bin_edges[:-1]
+        # Generate the correct bins for plotting
+        bins_for_bar = bin_edges[:-1]
 
-    # Plot the average reference score for each bin
-    plt.plot(np.arange(len(bins_for_bar)), avg_reference, label='Spec2Vec')
+        # Plot the average reference score for each bin
+        plt.plot(np.arange(len(bins_for_bar)), avg_reference, label='Spec2Vec')
     
     #### Modified Cosine ####
-    # Remove NaNs
-    scoring_df_copy = scoring_df[~scoring_df['modified_cosine'].isna()].copy(deep=True)
-    
-    top_n_scores = scoring_df_copy['modified_cosine'].nlargest(top_n).sort_values(ascending=False)
-    top_n_score_idx = top_n_scores.index
-    top_n_scores = top_n_scores.values
-    
-    top_n_reference = scoring_df_copy.loc[top_n_score_idx, 'tanimoto'].values
-    # print(top_n_reference)
-    
-    # Bin the top_n_scores into 10 bins
-    hist, bin_edges = np.histogram(top_n_scores, bins=10)
-    # Flip hist, bin edges so the highest similarity is on the left
-    hist = np.flip(hist)
-    bin_edges = np.flip(bin_edges)
-    
-    # Using the bins generated, get the average reference score for each bin
-    avg_reference = np.zeros(10)
-    for i in range(10):
-        bin_indices = np.where((top_n_scores < bin_edges[i]) & (top_n_scores >= bin_edges[i+1]))[0]
-        avg_reference[i] = np.mean(top_n_reference[bin_indices])
+    if 'modified_cosine' in scoring_df.columns:
+        # Remove NaNs
+        scoring_df_copy = scoring_df[~scoring_df['modified_cosine'].isna()].copy(deep=True)
         
-    # print("BIN EDGES",bin_edges)
-    # print("AVG REFERENCE", avg_reference)
-    
-    # Generate the correct bins for plotting
-    bins_for_bar = bin_edges[:-1]
-    
-    # Plot the average reference score for each bin
-    plt.plot(np.arange(len(bins_for_bar)), avg_reference, color='orange', label='Modified Cosine')
-    
+        top_n_scores = scoring_df_copy['modified_cosine'].sort_values(ascending=False)[:top_n]
+        top_n_score_idx = top_n_scores.index
+        top_n_scores = top_n_scores.values
+        
+        top_n_reference = scoring_df_copy.loc[top_n_score_idx, 'tanimoto'].values
+        # print(top_n_reference)
+        
+        # Bin the top_n_scores into 10 bins
+        hist, bin_edges = np.histogram(top_n_scores, bins=10)
+        # Flip hist, bin edges so the highest similarity is on the left
+        hist = np.flip(hist)
+        bin_edges = np.flip(bin_edges)
+        
+        # Using the bins generated, get the average reference score for each bin
+        avg_reference = np.zeros(10)
+        for i in range(10):
+            bin_indices = np.where((top_n_scores < bin_edges[i]) & (top_n_scores >= bin_edges[i+1]))[0]
+            avg_reference[i] = np.mean(top_n_reference[bin_indices])
+            
+        # print("BIN EDGES",bin_edges)
+        # print("AVG REFERENCE", avg_reference)
+        
+        # Generate the correct bins for plotting
+        bins_for_bar = bin_edges[:-1]
+        
+        # Plot the average reference score for each bin
+        plt.plot(np.arange(len(bins_for_bar)), avg_reference, color='orange', label='Modified Cosine')
+        
     #### Plot the theoretical maximum ####
-    top_n_struc_sim = scoring_df_copy['tanimoto'].nlargest(top_n).sort_values(ascending=False).values
+    top_n_struc_sim = scoring_df_copy['tanimoto'].sort_values(ascending=False)[:top_n].values
     # print("top_n_struc_sim:", top_n_struc_sim)
     
     # Bin the top_n_scores into 10 bins
@@ -161,7 +164,7 @@ def spec2vec_percentile_plot(scoring_df:pd.DataFrame,metric_dir)->None:
     
     plt.title(f'Average Tanimoto Scores for High Spectra Similarity Scores')
     # Label x ticks with percentile
-    plt.xticks(np.arange(len(bins_for_bar)), [f'{x*100:.2f}%' for x in np.linspace(0, top_percentile, len(bins_for_bar))])
+    plt.xticks(np.arange(len(bins_for_bar)), [f'{x*100:.2f}%' for x in np.linspace(0, top_percentile, len(bins_for_bar))], rotation=45)
     plt.xlim(0, len(bins_for_bar))
     plt.xlabel('Top Percentile of Spectral Similarity Score')
     plt.ylabel('Tanimoto Score')
@@ -169,14 +172,23 @@ def spec2vec_percentile_plot(scoring_df:pd.DataFrame,metric_dir)->None:
     plt.savefig(os.path.join(metric_dir, 'top_percentile.png'), dpi=300, bbox_inches="tight")
         
 
-def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str, metric_dir:str, pairs_path:str=None):    
+def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str, metric_dir:str, test_pairs_path:str=None, train_pairs_path:str=None):    
     
     print("Loading Data", flush=True)
     spectra_path = f'{data_path}/data/ALL_GNPS_positive_test_split.pickle'
     
     train_test_similarities = pd.read_csv(f'{data_path}/train_test_tanimoto_df.csv', index_col=0)
     
-    if model != 'modified_cosine':
+    if train_pairs_path is not None:
+            # We need to remove the spectrum ids from the train-test similarity matrix that are not in train pairs
+            print("Filtering Train-Test Similarity Matrix based on train pairs")
+            train_inchikeys= np.unique(pd.read_feather(train_pairs_path)[['inchikey_1','inchikey_2']].values)
+            print(f"Found {len(train_inchikeys)} unique inchikeys in the train pairs")
+            print(f"Found {len(train_test_similarities)} unique inchikeys in the train-test similarity matrix")
+            train_test_similarities = train_test_similarities.loc[train_inchikeys, :]  
+            print(f"Filtered to {len(train_test_similarities)} unique inchikeys in the train-test similarity matrix")
+    
+    if model != 'modified_cosine' or predictions is not None:
             
         tanimoto_df = pd.read_csv(f'{data_path}/test_tanimoto_df.csv', index_col=0)
 
@@ -186,10 +198,10 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
         
         structure_mapping = {spectrum.get("spectrum_id"): spectrum.get("inchikey")[:14] for spectrum in spectra_test}
         
-        if pairs_path is not None:
-            print(f"Filtering spectra based on pairs in {pairs_path}")
+        if test_pairs_path is not None:
+            print(f"Filtering spectra based on pairs in {test_pairs_path}")
             print(f"Began with {len(spectra_test)} spectra, which corresponds to {len(np.unique([s.get('inchikey')[:14] for s in spectra_test]))} unique InChI Keys")
-            pairs_df = pd.read_csv(pairs_path)
+            pairs_df = pd.read_csv(test_pairs_path)
             valid_spectra_ids = np.unique(pairs_df[['spectrum_id_1', 'spectrum_id_2']].values)
             spectra_test = [s for s in spectra_test if s.get('spectrum_id') in valid_spectra_ids]
             print(f"Ended with {len(spectra_test)} spectra, which corresponds to {len(np.unique([s.get('inchikey')[:14] for s in spectra_test]))} unique InChI Keys")
@@ -216,11 +228,11 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
         print("Shape of tanimoto_df:", tanimoto_df.shape)
         inchikey_idx_test = inchikey_idx_test.astype("int")
         tanimoto_df = tanimoto_df.iloc[inchikey_idx_test, inchikey_idx_test]
-        if pairs_path is not None:
+        if test_pairs_path is not None:
             print("Shape of tanimoto_df after filtering:", tanimoto_df.shape)
         print("Shape of predictions:", predictions.shape)
         predictions = predictions.iloc[ordered_prediction_index, ordered_prediction_index]
-        if pairs_path is not None:
+        if test_pairs_path is not None:
             print("Shape of predictions after filtering:", predictions.shape)
         
         assert len(predictions.index.values) == len(predictions.index.unique())
@@ -233,8 +245,8 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
         predictions.columns = ['spectrum_id_1', 'spectrum_id_2', 'score']
 
         # Only get valid pairs
-        if pairs_path is not None:
-            pairs_df = pd.read_csv(pairs_path)
+        if test_pairs_path is not None:
+            pairs_df = pd.read_csv(test_pairs_path)
 
             # Create sets of the pairs
             pair_set = set(map(tuple, pairs_df[['spectrum_id_1', 'spectrum_id_2']].values))
@@ -303,7 +315,7 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
         predictions = predictions.copy()
 
     elif model == 'modified_cosine':
-        predictions = pd.read_csv(pairs_path)
+        predictions = pd.read_feather(test_pairs_path)
         
         # Create sets of the pairs
         pair_set = set(map(tuple, predictions[['spectrum_id_1', 'spectrum_id_2']].values))
@@ -343,7 +355,7 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
     train_test_grid = train_test_similarity_heatmap(predictions, train_test_similarities, ref_score_bins)
     # Returns {'bin_content':bin_content_grid, 'bounds':bound_grid, 'rmses':rmse_grid, 'maes':mae_grid}
     
-    plt.figure()
+    plt.figure(figsize=grid_fig_size)
     plt.title('Train-Test Dependent RMSE')
     plt.imshow(train_test_grid['rmses'], vmin=0)
     plt.colorbar()
@@ -354,7 +366,7 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
     plt.yticks(ticks=np.arange(0,len(train_test_grid['rmses'])), labels=tick_labels,)
     plt.savefig(os.path.join(metric_dir, 'heatmap.png'))
     # Train-Test Similarity Dependent Counts
-    plt.figure()
+    plt.figure(figsize=grid_fig_size)
     plt.title('Train-Test Dependent Counts')
     plt.imshow(train_test_grid['bin_content'], vmin=0)
     plt.colorbar()
@@ -367,7 +379,7 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
                 plt.text(j, i, f'{train_test_grid["bin_content"][i,j]:.0f}', ha="center", va="center", color="white")
     plt.savefig(os.path.join(metric_dir, 'heatmap_counts.png'))
     # Train-Test Similarity Dependent Nan-Counts
-    plt.figure()
+    plt.figure(figsize=grid_fig_size)
     plt.title('Train-Test Dependent Nan-Counts')
     plt.imshow(train_test_grid['nan_count'], vmin=0)
     plt.colorbar()
@@ -434,9 +446,16 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
     fig_path = os.path.join(metric_dir, "metrics.png")
     plt.savefig(fig_path)
     
-    # Only do this for spec2vec
     if model == 'spec2vec':
         spec2vec_percentile_plot(predictions, metric_dir)
+    elif model == 'modified_cosine':
+        # Relable predictions['score'] -> 'modified_cosine'
+        mod_cos_preds = predictions.copy(deep=True)
+        mod_cos_preds['modified_cosine'] = mod_cos_preds['score']
+        # Drop score, since otherwise it will be interepreted as a prediction
+        mod_cos_preds.drop(columns=['score'], inplace=True)
+        spec2vec_percentile_plot(mod_cos_preds, metric_dir)
+        del mod_cos_preds
     
     # Train-Test Similarity Bar Plot
     train_test_sim = train_test_similarity_bar_plot(predictions, train_test_similarities, ref_score_bins)
@@ -476,7 +495,7 @@ def evaluate(predictions:pd.DataFrame, split_type:str, model:str, data_path:str,
     plt.title(f'Predicted vs Reference Spectral Similarity Scores \n(R squared = {r2:.2f})')
     plt.savefig(os.path.join(metric_dir, 'predicted_vs_reference.png'))
     
-def eval_ms2deepscore(split_type:str, model:str, data_path:str, metric_dir:str, pairs_path:str=None):
+def eval_ms2deepscore(split_type:str, model:str, data_path:str, metric_dir:str, test_pairs_path:str=None):
     if not os.path.isdir(metric_dir):
         os.makedirs(metric_dir, exist_ok=True)
     
@@ -497,9 +516,9 @@ def eval_ms2deepscore(split_type:str, model:str, data_path:str, metric_dir:str, 
     
     df_labels = [s.get("spectrum_id") for s in spectra_test]
     ms2deepscore_predictions = pd.DataFrame(predictions, index=df_labels, columns=df_labels)
-    evaluate(ms2deepscore_predictions, split_type, model, data_path, metric_dir, pairs_path=pairs_path)
+    evaluate(ms2deepscore_predictions, split_type, model, data_path, metric_dir, test_pairs_path=test_pairs_path)
 
-def eval_spec2vec(split_type:str, model:str, data_path:str, metric_dir:str, pairs_path:str=None):
+def eval_spec2vec(split_type:str, model:str, data_path:str, metric_dir:str, test_pairs_path:str=None, train_pairs_path:str=None):
     if not os.path.isdir(metric_dir):
         os.makedirs(metric_dir, exist_ok=True)
     spectra_path = glob(f'{data_path}/data/ALL_GNPS_positive_test_split*.pickle')[0]
@@ -551,19 +570,66 @@ def eval_spec2vec(split_type:str, model:str, data_path:str, metric_dir:str, pair
     else: 
         spec2vec_predictions = pd.read_csv(os.path.join(metric_dir, 'spec2vec_predictions.csv'), index_col=0)
     
-    evaluate(spec2vec_predictions, split_type, model, data_path, metric_dir, pairs_path=pairs_path)
+    evaluate(spec2vec_predictions, split_type, model, data_path, metric_dir, test_pairs_path=test_pairs_path, train_pairs_path=train_pairs_path)
 
 
-def eval_modified_cosine(split_type:str, data_path:str, metric_dir:str, pairs_path:str):
+def eval_modified_cosine(split_type:str, data_path:str, metric_dir:str, test_pairs_path:str, train_pairs_path:str=None):
     if not os.path.isdir(metric_dir):
         os.makedirs(metric_dir, exist_ok=True)
     spectra_path = f'{data_path}/data/ALL_GNPS_positive_test_split.pickle'
     spectra_test = list(get_spectra(spectra_path))
-    modified_cosine = ModifiedCosine(tolerance=0.005)
+    print(f"Loaded {len(spectra_test)} spectra")
 
-    assert pairs_path is not None
+    # When pairs are not provided, evaluate the all-pairs modified cosine
+    if test_pairs_path is None:
+        # These parameters must match generate_valid_pairs.py
+        spectra_test = [remove_peaks_around_precursor_mz(s, 0.1) for s in spectra_test]
+        modified_cosine = ModifiedCosine(tolerance=0.5)
+        
+        def _parallel_modified_cosine(lst):
+            output_lst = np.zeros((len(lst), 4))
+            for idx, (i, j) in enumerate(lst):
+                res = modified_cosine.pair(spectra_test[i], spectra_test[j])
+                output_lst[idx] = (i, j, res['score'], res['matches'])
+            return output_lst
+        
+        if not os.path.exists(os.path.join(metric_dir, 'modified_cosine_predictions.feather')):
+            print("Calculating modified cosine predictions")
+            # Chunk the calculation to reduce overhead cost
+            
+            cosine_pairs = [(i, j) for i in range(len(spectra_test)) for j in range(i, len(spectra_test))]
+            chunked_pairs = np.array_split(cosine_pairs, max(1, (os.cpu_count()-4))*10) # We want really big chunks because the overhead is high relative to the computation
+            del cosine_pairs
+            print(f"Split calculation into {len(chunked_pairs)} chunks")
+            
+            result = Parallel(n_jobs=-8)(delayed(_parallel_modified_cosine)(lst) for lst in tqdm(chunked_pairs))
+            # Flatten
+            result = np.concatenate(result)
+            predictions = np.zeros((len(spectra_test), len(spectra_test)))
+            
+            for i, j, score, num_matched_peaks in result:
+                i = int(i)
+                j = int(j)
+                if num_matched_peaks < 6:
+                    predictions[i][j] = np.nan
+                    predictions[j][i] = np.nan
+                else:
+                    predictions[i][j] = score
+                    predictions[j][i] = score
+            
+            # Transform to DataFrame
+            modified_cosine_predictions = pd.DataFrame(predictions, index=[s.get("spectrum_id") for s in spectra_test], columns=[s.get("spectrum_id") for s in spectra_test])
+            modified_cosine_predictions.to_feather(os.path.join(metric_dir, 'modified_cosine_predictions.feather'))
+        else:
+            print("Cached modified cosine predictions found")
+            modified_cosine_predictions = pd.read_feather(os.path.join(metric_dir, 'modified_cosine_predictions.feather'))
 
-    evaluate(None, split_type, 'modified_cosine', data_path, metric_dir, pairs_path=pairs_path)
+        evaluate(modified_cosine_predictions, split_type, 'modified_cosine', data_path, metric_dir, test_pairs_path=test_pairs_path, train_pairs_path=train_pairs_path)
+    # When pairs are provided, we already have the modified cosine precalculated
+    elif test_pairs_path is not None:
+        evaluate(None, split_type, 'modified_cosine', data_path, metric_dir, test_pairs_path=test_pairs_path, train_pairs_path=train_pairs_path)
+    else:
+        raise ValueError("test_pairs_path must be provided if not using the full test set")
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate similarity scores')
@@ -573,8 +639,10 @@ def main():
     parser.add_argument('--model', type=str, default=None, help='Path to model')
     parser.add_argument('--n_most_recent', type=int, default=None, help='Number of most recent models to evaluate')
     parser.add_argument('--debug', type=str, help='Debug mode', default='False')
-    parser.add_argument('--pairs_path', type=str, default=None,
+    parser.add_argument('--test_pairs_path', type=str, default=None,
                         help='Path to a csv file of pairs used in evaluation. Must contain columns "spectrum_id_1" and "spectrum_id_2"')
+    parser.add_argument('--train_pairs_path', type=str, default=None,
+                        help='Path to a csv file of pairs used in training. Must contain columns "inchikey_1" and "inchikey_2"')
         
     method_dir_dict ={
         'spec2vec': '/data/nas-gpu/SourceCode/michael_s/Baselines_For_Benchmark/src/spec2vec/src',
@@ -593,11 +661,11 @@ def main():
     if args.method == 'modified_cosine':
         if args.model is not None:
             raise ValueError("Model path can not be provided for modified cosine")
-        if args.pairs_path is not None:
+        if args.test_pairs_path is not None:
             metric_dir = f'./{args.split_type}/{args.method}/metrics_filtered_pairs/'
         else:
             metric_dir = f'./{args.split_type}/{args.method}/metrics/'
-        eval_modified_cosine(args.split_type, args.data, metric_dir, args.pairs_path)
+        eval_modified_cosine(args.split_type, args.data, metric_dir, args.test_pairs_path, args.train_pairs_path)
     elif args.method.lower() in ['spec2vec', 'ms2deepscore']:
         if args.split_type is None:
             raise ValueError("split_type must be provided for spec2vec")
@@ -630,11 +698,11 @@ def main():
             print(f"Running model ({model_index+1}/{len(available_models)})...", flush=True)
             print('model_name', model_name)
             model_time = datetime.strptime(model_name.split('/')[-2], "%d_%m_%Y_%H_%M_%S")
-            if args.pairs_path is not None:
+            if args.test_pairs_path is not None:
                 metric_dir = f'./{args.split_type}/{model_name.rsplit("/",2)[-2]}/metrics_filted_pairs/'
             else:
                 metric_dir = f'./{args.split_type}/{model_name.rsplit("/",2)[-2]}/metrics/'
-            eval_spec2vec(args.split_type, model_time.strftime("%d_%m_%Y_%H_%M_%S"), args.data, metric_dir, args.pairs_path)
+            eval_spec2vec(args.split_type, model_time.strftime("%d_%m_%Y_%H_%M_%S"), args.data, metric_dir, args.test_pairs_path, args.train_pairs_path)
 
 if __name__ == "__main__":
     main()
