@@ -320,7 +320,7 @@ def generate_pairs(spectra:list,
     # spectra = [remove_peaks_around_precursor_mz(s, 17) for s in spectra]
     # spectra = [remove_peaks_outside_top_k(s, k=6, mz_window=25) for s in spectra]
     # spectra = [x for x in spectra if x is not None]
-    spectra = [remove_peaks_around_precursor_mz(s, 0.1) for s in spectra]
+    # spectra = [remove_peaks_around_precursor_mz(s, 0.1) for s in spectra]
         
     # Create a dataframe with the metadata and spectrum objects
     spectrum_df = pd.DataFrame([{'spectrum_id': s.metadata['spectrum_id'],
@@ -355,6 +355,7 @@ def generate_pairs(spectra:list,
         print("New Length: ", len(spectrum_df))
     
     print(spectrum_df)
+    # Reduces training set to specified spectrum count per inchikey
     spectrum_df = reduce_spectra(spectrum_df, pre_filter_count)
     print(spectrum_df)
     
@@ -389,39 +390,73 @@ def generate_pairs(spectra:list,
     
     ## TODO: To save memory, we can write the spectrum_df to a temporary hdfstore and read one group at a time
     ## TODO: Do this per inchikey?
+
     for _, group in tqdm(spectrum_df):
         # print(group)
         # Get all pairs with precursor mz difference less than 200 using vectorized operations
-        pairs = group.merge(group, on=merge_on_lst, suffixes=('_1', '_2'))   # Will perform outer product
-        pairs = pairs.loc[pairs['spectrum_id_1'] < pairs['spectrum_id_2']]                                      # Get upper diagonal
-        pairs['precursor_mass_difference'] = (pairs['precursor_mz_1'] - pairs['precursor_mz_2']).abs().astype('float16')
-        org_len = len(pairs)
-        if not skip_precursor_mz:
-            pairs = pairs.loc[abs(pairs['precursor_mz_1'] - pairs['precursor_mz_2']) < 200]
-            filtered_by_precursor_mz += org_len - len(pairs)
-        # If they have collision energy, filter it out if the difference is greater than 5, if they don't just let them through
-        if collision_energy_thresh != -1.0:
+        # Tile over the outer join to get all pairs (without using too much memory)
+        patch_count = 50
+        patch_size = int(len(group)/patch_count)
+        print("Patch Size:", patch_size, flush=True)
+        for subgroup_idx in tqdm(range(patch_count)):
+            if subgroup_idx < patch_count - 1:
+                subgroup = group.iloc[subgroup_idx*patch_size:(subgroup_idx+1)*patch_size]
+            else:
+                subgroup = group.iloc[subgroup_idx*patch_size:]
+            if len(subgroup) == 0:
+                # For a set of spectra with length < int(len(group)/patch_count), the first patch_count-1 iterations will be empty, skip them
+                continue
+
+            pairs = group.merge(subgroup, on=merge_on_lst, suffixes=('_1', '_2'))   # Will perform outer product                   # TODO: Reza's idea: tile over this
+            pairs = pairs.loc[pairs['spectrum_id_1'] < pairs['spectrum_id_2']]   # Get upper diagonal
+            
             org_len = len(pairs)
-            ce_pairs    = pairs.loc[(pairs['collision_energy_1'].notna() & pairs['collision_energy_2'].notna())]
-            ce_pairs    = ce_pairs.loc[(pairs['collision_energy_1'] - ce_pairs['collision_energy_2']).abs() <= collision_energy_thresh]
-            other_pairs = pairs.loc[pairs['collision_energy_1'].isna() | pairs['collision_energy_2'].isna()]
-            pairs = pd.concat((ce_pairs, other_pairs))
-            new_len = len(pairs)
-            filtered_by_mismatched_ce += org_len - new_len
-            del ce_pairs, other_pairs
-        
-        # If we have ms_mass_analyzer_1 and ms_mass_analyzer_2, concatenate them with a semicolon
-        if 'ms_mass_analyzer_1' in pairs.columns and 'ms_mass_analyzer_2' in pairs.columns:
-            pairs['ms_mass_analyzer'] = pairs[['ms_mass_analyzer_1', 'ms_mass_analyzer_2']].apply(lambda x: str(x.iloc[0]) + ';' + str(x.iloc[1]), axis=1)
-            pairs['ms_mass_analyzer'] = pairs['ms_mass_analyzer'].astype('category')
-        # If we have ms_ionisation_1 and ms_ionisation_2, concatenate them with a semicolon
-        if 'ms_ionisation_1' in pairs.columns and 'ms_ionisation_2' in pairs.columns:
-            pairs['ms_ionisation'] = pairs[['ms_ionisation_1', 'ms_ionisation_2']].apply(lambda x: str(x.iloc[0]) + ';' + str(x.iloc[1]), axis=1)
-            pairs['ms_ionisation'] = pairs['ms_ionisation'].astype('category')
-        
-        output_lst.extend(pairs[['spectrum_id_1', 'spectrum_id_2', 'ms_mass_analyzer', 'ms_ionisation', 'precursor_mass_difference','inchikey_1','inchikey_2']].to_dict('records'))
-        del pairs
-        gc.collect()
+            if not skip_precursor_mz:
+                pairs['precursor_mass_difference'] = (pairs['precursor_mz_1'] - pairs['precursor_mz_2']).abs().astype('float16')
+                pairs = pairs.loc[abs(pairs['precursor_mz_1'] - pairs['precursor_mz_2']) < 200]
+                filtered_by_precursor_mz += org_len - len(pairs)
+            # If they have collision energy, filter it out if the difference is greater than 5, if they don't just let them through
+            if collision_energy_thresh != -1.0:
+                org_len = len(pairs)
+                ce_pairs    = pairs.loc[(pairs['collision_energy_1'].notna() & pairs['collision_energy_2'].notna())]
+                ce_pairs    = ce_pairs.loc[(pairs['collision_energy_1'] - ce_pairs['collision_energy_2']).abs() <= collision_energy_thresh]
+                other_pairs = pairs.loc[pairs['collision_energy_1'].isna() | pairs['collision_energy_2'].isna()]
+                pairs = pd.concat((ce_pairs, other_pairs))
+                new_len = len(pairs)
+                filtered_by_mismatched_ce += org_len - new_len
+                del ce_pairs, other_pairs
+            
+            # If we have ms_mass_analyzer_1 and ms_mass_analyzer_2, concatenate them with a semicolon
+            if 'ms_mass_analyzer_1' in pairs.columns and 'ms_mass_analyzer_2' in pairs.columns:
+                pairs['ms_mass_analyzer'] = pairs[['ms_mass_analyzer_1', 'ms_mass_analyzer_2']].apply(lambda x: str(x.iloc[0]) + ';' + str(x.iloc[1]), axis=1)
+                pairs['ms_mass_analyzer'] = pairs['ms_mass_analyzer'].astype('category')
+            # If we have ms_ionisation_1 and ms_ionisation_2, concatenate them with a semicolon
+            if 'ms_ionisation_1' in pairs.columns and 'ms_ionisation_2' in pairs.columns:
+                pairs['ms_ionisation'] = pairs[['ms_ionisation_1', 'ms_ionisation_2']].apply(lambda x: str(x.iloc[0]) + ';' + str(x.iloc[1]), axis=1)
+                pairs['ms_ionisation'] = pairs['ms_ionisation'].astype('category')
+
+            output_lst.extend(pairs[['spectrum_id_1', 'spectrum_id_2', 'ms_mass_analyzer', 'ms_ionisation', 'precursor_mass_difference','inchikey_1','inchikey_2']].to_dict('records'))
+            columns=['spectrum_id_1', 'spectrum_id_2', 'ms_mass_analyzer', 'ms_ionisation', 'precursor_mass_difference']
+            
+            ############ TEMP OUTPUT FOR DEBUGGING ############
+            # temp_output_df = pd.DataFrame(output_lst, columns=columns)
+
+            # if len(temp_output_df) > 0:
+            #     pretty_name = ''
+            #     # For each of the merge on criteria, add the unique value of that column to the string
+            #     for merge_on in merge_on_lst:
+            #         pretty_name += f"{pairs[merge_on].iloc[0]}_"
+
+            #     pretty_name = '_' + pretty_name + "_"
+            #     temp_output_df.to_csv(f'{output_feather_path.rsplit(".", 1)[0]}{pretty_name}{subgroup_idx}.csv')
+            # else:
+            #     print("\nNo pairs to save")
+
+            # output_lst = []
+            ####################################################
+            
+            del pairs
+            gc.collect()
     
     del spectrum_df
     gc.collect()
@@ -485,8 +520,8 @@ def generate_pairs(spectra:list,
 
 def main():
     parser = parser = argparse.ArgumentParser(description='Generate valid pairs')
-    parser.add_argument('--input_pickle_path', type=str, help='Input file')
-    parser.add_argument('--output_feather_path', type=str, help='Output file')
+    parser.add_argument('--input_pickle_path', type=str, help='Input file') # Contains all spectra in the dataset
+    parser.add_argument('--output_feather_path', type=str, help='Output file')  # How to output the pairs
     parser.add_argument('--summary_plot_dir', type=str, help='Path to the directory where summary plots will be saved', default=None)
     parser.add_argument('--prune_duplicate_structures', type=int, help='Prune duplicate structures', default=0)
     parser.add_argument('--pre_filter_count', type=int, help='Maximum count of spectra per structure.', default=None)
