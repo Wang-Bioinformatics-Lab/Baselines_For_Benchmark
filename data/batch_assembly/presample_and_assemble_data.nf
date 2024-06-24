@@ -16,12 +16,14 @@ params.save_format = 'hdf5'
 params.num_epochs = 1800
 params.low_io = false
 
+// Filtering Parameters
+params.mass_analyzer_lst = ""   // A semicolon delimited list of mass analyzers to include, an empty string means all are included
+
 params.force_one_epoch = false
 
 params.memory_efficent = false
 
-// TODO encode paths as channels
-
+split_size = 50     // How many epochs each worker has, num_epochs must be divisible by this numebr to avoid errors
 
 // This process samples one epoch of data
 process sampleSeveralEpochs {
@@ -32,7 +34,7 @@ process sampleSeveralEpochs {
 
     // If not using an hdf5 pairs file, this is quite memory intensive, 
     // and you'll likely want to aggressively limit parallelism
-    maxForks 3
+    maxForks 10 //5
 
     input:
     each epoch_num 
@@ -90,12 +92,17 @@ process sampleSeveralEpochs {
     else
         memory_efficent=''
     fi
+    if [ "$params.mass_analyzer_lst" != '' ]; then
+        mass_analyzer_lst='--mass_analyzer_lst $params.mass_analyzer_lst'
+    else
+        mass_analyzer_lst=''
+    fi
 
     # For validation, we'll want exactly one epoch
     if [ "$params.force_one_epoch" = true ]; then
         num_epochs='--num_epochs 1'
     else
-        num_epochs='--num_epochs 50'    # 50 to match divisor of params.num_epochs
+        num_epochs='--num_epochs $split_size'
     fi
 
     # Print all parameters
@@ -117,6 +124,7 @@ process sampleSeveralEpochs {
                                                     \$num_epochs \
                                                     \$low_io \
                                                     \$memory_efficent \
+                                                    \$mass_analyzer_lst \
                                                     --save_dir "./" \
                                                     --seed $epoch_num
     """
@@ -141,7 +149,7 @@ process assembleEpochs {
 
 
 workflow {
-    epoch_ch = Channel.of(1..params.num_epochs/50)
+    epoch_ch = Channel.of(1..params.num_epochs/split_size)
 
     // For train_path, train_pairs_path, tanimoto_scores_path create a channel
     // If the value is '', create channel.empty
@@ -162,5 +170,5 @@ workflow {
     }
     
     h5_ch = sampleSeveralEpochs(epoch_ch, train_path_ch, train_pairs_path_ch, tanimoto_scores_path_ch)
-    assembleEpochs(h5_ch.flatten())
+    assembleEpochs(h5_ch.collect())
 }
