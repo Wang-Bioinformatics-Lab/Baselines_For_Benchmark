@@ -18,6 +18,8 @@ params.low_io = false
 
 params.force_one_epoch = false
 
+params.memory_efficent = false
+
 // TODO encode paths as channels
 
 
@@ -45,17 +47,20 @@ process sampleSeveralEpochs {
     # For each parameter, if it is not '', then we assemble it and add it to the command.
     # This will allow nextflow to work as a flexible wrapper around the python script and
     # the python script will handle any parameter errors.
-    if [ "$params.train_path" != 'NO_FILE' ]; then
+    echo "params.train_path: $params.train_path"
+    if [ "$params.train_path" != '' ]; then
         train_path='--train_path $train_path'
     else
         train_path=''
     fi
-    if [ "$params.train_pairs_path" != 'NO_FILE' ]; then
+    echo "params.train_pairs_path: $params.train_pairs_path"
+    if [ "$params.train_pairs_path" != '' ]; then
         train_pairs_path='--train_pairs_path $train_pairs_path'
     else
         train_pairs_path=''
     fi
-    if [ "$params.tanimoto_scores_path" != 'NO_FILE' ]; then
+    echo "params.tanimoto_scores_path: $params.tanimoto_scores_path"
+    if [ "$params.tanimoto_scores_path" != '' ]; then
         tanimoto_scores_path='--tanimoto_scores_path $tanimoto_scores_path'
     else
         tanimoto_scores_path=''
@@ -79,6 +84,11 @@ process sampleSeveralEpochs {
         low_io='--low_io'
     else
         low_io=''
+    fi
+    if [ "$params.memory_efficent" = true ]; then
+        memory_efficent='--memory_efficent'
+    else
+        memory_efficent=''
     fi
 
     # For validation, we'll want exactly one epoch
@@ -106,6 +116,7 @@ process sampleSeveralEpochs {
                                                     \$save_format \
                                                     \$num_epochs \
                                                     \$low_io \
+                                                    \$memory_efficent \
                                                     --save_dir "./" \
                                                     --seed $epoch_num
     """
@@ -142,12 +153,12 @@ workflow {
     if (params.train_pairs_path != '') {
         train_pairs_path_ch = Channel.fromPath(params.train_pairs_path)
     } else {
-        train_pairs_path_ch = Channel.fromPath('NO_FILE')
+        train_pairs_path_ch = Channel.fromPath('NO_FILE1')
     }
     if (params.tanimoto_scores_path != '') {
         tanimoto_scores_path_ch = Channel.fromPath(params.tanimoto_scores_path)
     } else {
-        tanimoto_scores_path_ch = Channel.fromPath('NO_FILE')
+        tanimoto_scores_path_ch = Channel.fromPath('NO_FILE2')
     }
     
     h5_ch = sampleSeveralEpochs(epoch_ch, train_path_ch, train_pairs_path_ch, tanimoto_scores_path_ch)
