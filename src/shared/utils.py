@@ -2,7 +2,10 @@ import pandas as pd
 import numpy as np
 from matchms.filtering import add_fingerprint
 from matchms.similarity import FingerprintSimilarity
-
+from dask import delayed, compute
+from dask.diagnostics import ProgressBar
+import dask
+from tqdm import tqdm
 
 def get_structural_similarity_matrix(a, a_labels, b=None, b_labels=None, fp_type='', similarity_measure="jaccard"):
     if b is None or b_labels is None:
@@ -20,58 +23,49 @@ def get_structural_similarity_matrix(a, a_labels, b=None, b_labels=None, fp_type
     scores_mol_similarity = similarity_measure.matrix(a, b)
     return pd.DataFrame(scores_mol_similarity, columns=a_labels, index=b_labels)
 
-def train_test_similarity_dependent_losses(prediction_df, train_test_similarity, ref_score_bins, mode='max'):
-    # prediction_df is a pandas dataframe with columns spectruim_id_1, spectrum_id_2, inchikey_1, inchikey_2, score, error
+def train_test_similarity_dependent_losses(prediction_df, ref_score_bins, mode='max'):
     bin_content = []
     rmses = []
     maes = []
     bounds = []
     ref_scores_bins_inclusive = ref_score_bins.copy()
-    # ref_scores_bins_inclusive[0] = -np.inf
     ref_scores_bins_inclusive[-1] = np.inf
     
     assert mode in ['max', 'mean']
-    all_predicted_inchikeys = prediction_df['inchikey_1'].unique()  # We assume square matrix
-        
-    # Only include if the keys are in the error matrix
-    train_test_similarity = train_test_similarity.loc[:, all_predicted_inchikeys]
     
-    if mode == 'max':
-        train_test_similarity = train_test_similarity.max(axis=0)
-        print("Max similarity to train set")
-        print(train_test_similarity)
-        print("Mean of the max similarities")
-        print(train_test_similarity.mean())
-        print("Max of the max similarities")
-        print(train_test_similarity.max())
-    elif mode == 'mean':
-        train_test_similarity = train_test_similarity.mean(axis=0)
-        print("Mean similarity to train set")
-        print(train_test_similarity)
-        print("Mean of the mean similarities")
-        print(train_test_similarity.mean())
-    
-    for inchikey14 in all_predicted_inchikeys:
-        assert inchikey14 in train_test_similarity.index
-    
+    tasks = []
     for i in range(len(ref_scores_bins_inclusive)-1):
         low = ref_scores_bins_inclusive[i]
         high = ref_scores_bins_inclusive[i+1]
         bounds.append((low, high))
-        relevant_keys = train_test_similarity.loc[(train_test_similarity > low) & (train_test_similarity <= high)].index
-        
-        relevant_values = prediction_df.loc[(prediction_df['inchikey_1'].isin(relevant_keys)), :]['error']
-        
-        bin_content.append(relevant_keys.shape[0])
-        
-        maes.append(np.nanmean(np.abs(relevant_values).values))
-        rmses.append(np.sqrt(np.nanmean(np.square(relevant_values).values)))
-        rmse_errors = np.sqrt(np.square(relevant_values).values)
-        mae_errors = np.abs(relevant_values).values
-        
-    return {'bin_content':bin_content, 'bounds':bounds, 'rmses':rmses, 'maes':maes, f'{mode}_sim_to_train': train_test_similarity}
+        if mode == 'max':
+            relevant_rows = prediction_df.loc[(prediction_df['max_max_train_test_sim'] > low) &
+                                              (prediction_df['max_max_train_test_sim'] <= high)]
+        elif mode == 'mean':
+            relevant_rows = prediction_df.loc[(prediction_df['mean_max_train_test_sim'] > low) &
+                                              (prediction_df['mean_max_train_test_sim'] <= high)]
+        else:
+            raise ValueError(f"Unknown mode {mode}")
+
+        bin_content.append(delayed(len)(relevant_rows))
+        maes.append(delayed(np.nanmean)(np.abs(relevant_rows['error'].values)))
+        rmses.append(delayed(np.sqrt)(delayed(np.nanmean)(np.square(relevant_rows['error'].values))))
+    
+    with ProgressBar(minimum=1.0):
+        bin_content, maes, rmses = compute(bin_content, maes, rmses)
+
+    # Ensure bounds are ordered
+    for i in range(len(bounds)-1):
+        assert bounds[i][1] == bounds[i+1][0], f"Bounds are not ordered: {bounds}"
+    
+    return {'bin_content': bin_content, 'bounds': bounds, 'rmses': rmses, 'maes': maes}
 
 def train_test_similarity_heatmap(prediction_df, train_test_similarity, ref_score_bins):
+    raise NotImplementedError("This function is not yet impletemented for dask")
+    # TODO: Current prediction_df does not have left and right similarity, therefore we cannot make the heatmap
+    # This figure will likely not be in the final publication because it's not informative anyways
+    # Therefore, we will not implement this function for now
+
     # prediction_df is a pandas dataframe with columns spectruim_id_1, spectrum_id_2, inchikey_1, inchikey_2, score, error
     ref_scores_bins_inclusive = ref_score_bins.copy()
     # ref_scores_bins_inclusive[0] = -np.inf
@@ -145,15 +139,20 @@ def train_test_similarity_bar_plot(prediction_df, train_test_similarity, bins):
         return {'bin_content':bin_content, 'bounds':[(ref_scores_bins_inclusive[i], ref_scores_bins_inclusive[i+1]) for i in range(len(ref_scores_bins_inclusive)-1)]}
 
 def tanimoto_dependent_losses(prediction_df, ref_score_bins):
-    """Compute errors (RMSE and MSE) for different bins of the reference scores (scores_ref).
+    """Compute errors (RMSE and MAE) for different bins of the reference scores (scores_ref).
     
     Parameters
     ----------
-    
-    prediction_df
+    prediction_df : DataFrame
+        DataFrame containing the predictions and ground truth similarities.
         
-    ref_score_bins
-        Bins for the refernce score to evaluate the performance of scores.
+    ref_score_bins : list
+        Bins for the reference score to evaluate the performance of scores.
+    
+    Returns
+    -------
+    dict
+        Dictionary containing bin contents, bounds, RMS errors, MA errors, and nan bin contents.
     """
     
     bin_content = []
@@ -164,21 +163,48 @@ def tanimoto_dependent_losses(prediction_df, ref_score_bins):
     ref_scores_bins_inclusive = ref_score_bins.copy()
     ref_scores_bins_inclusive[0] = -np.inf
     ref_scores_bins_inclusive[-1] = np.inf
-    for i in range(len(ref_scores_bins_inclusive)-1):
+
+    tasks = []
+    for i in range(len(ref_scores_bins_inclusive) - 1):
         low = ref_scores_bins_inclusive[i]
-        high = ref_scores_bins_inclusive[i+1]
+        high = ref_scores_bins_inclusive[i + 1]
         bounds.append((low, high))
-        
-        relevant_values = prediction_df.loc[(prediction_df.tanimoto >= low) & (prediction_df.tanimoto < high)]
 
-        nan_bin_content.append(relevant_values.score.isna().sum())
-        bin_content.append(relevant_values.score.notna().sum())
-        maes.append(np.nanmean(relevant_values.error.values))
-        rmses.append(np.sqrt(np.nanmean(np.square(relevant_values.error.values))))
+        relevant_rows = prediction_df.loc[(prediction_df['ground_truth_similarity'] >= low) &
+                                          (prediction_df['ground_truth_similarity'] < high)]
 
-    return {'bin_content': bin_content, 'bounds':bounds, 'rmses': rmses, 'maes':maes, 'nan_bin_content':nan_bin_content}
+        nan_bin_task = delayed(sum)(relevant_rows['predicted_similarity'].isna())
+        bin_content_task = delayed(sum)((~relevant_rows['predicted_similarity'].isna()))
+        mae_task = delayed(np.nanmean)(relevant_rows['error'].values)
+        rmse_task = delayed(np.sqrt)(delayed(np.nanmean)(np.square(relevant_rows['error'].values)))
+
+        tasks.append((nan_bin_task, bin_content_task, mae_task, rmse_task))
+
+    # Save computation graph to image
+    # dask.visualize(tasks, filename='/home/mstro016/tanimoto_dependent_losses.png')
+
+    with ProgressBar(minimum=1.0):
+        results = compute(*tasks)
+
+    # Unpack results using tuple unpacking
+    for idx in range(len(tasks)):
+        nan_bin_content.append(results[idx][0])
+        bin_content.append(results[idx][1])
+        maes.append(results[idx][2])
+        rmses.append(results[idx][3])
+
+    print("Results:")
+    print(bin_content)
+    print(nan_bin_content)
+    print(rmses)
+    print(maes)
+    print(bounds)
+    print("---------------", flush=True)
+
+    return {'bin_content': bin_content, 'bounds': bounds, 'rmses': rmses, 'maes': maes, 'nan_bin_content': nan_bin_content}
 
 def fixed_tanimoto_train_test_similarity_dependent(prediction_df, train_test_similarity, ref_score_bins):
+    raise NotImplementedError("This function is not yet impletemented for dask")
     ref_scores_bins_inclusive = ref_score_bins.copy()
     ref_scores_bins_inclusive[0] = -np.inf
     ref_scores_bins_inclusive[-1] = np.inf
@@ -235,3 +261,45 @@ def fixed_tanimoto_train_test_similarity_dependent(prediction_df, train_test_sim
             output_dict[key][sub_key]['rmse'] = np.sqrt(np.nanmean(np.square(errors).values))
     # First index is the train-test similarity bin, second index is the reference score bin
     return output_dict
+
+def pairwise_train_test_dependent_heatmap(prediction_df, similarity_bins):
+
+
+    count_grid = np.zeros((len(similarity_bins)-1, len(similarity_bins)-1))
+    rmse_grid = np.ones((len(similarity_bins)-1, len(similarity_bins)-1)) * -1
+    mae_grid = np.ones((len(similarity_bins)-1, len(similarity_bins)-1)) * -1
+    bounds = []
+    
+    tasks = []
+    for pairwise_sim_index in range(len(similarity_bins)-1):
+        low_pw = similarity_bins[pairwise_sim_index]
+        high_pw = similarity_bins[pairwise_sim_index+1]
+        bounds.append([])
+
+        for train_test_sim_index in range(len(similarity_bins)-1):
+            low_tt = similarity_bins[train_test_sim_index]
+            high_tt = similarity_bins[train_test_sim_index+1]
+
+            bounds[pairwise_sim_index].append((low_tt, high_tt))
+
+            relevant_values = prediction_df.loc[(prediction_df['max_max_train_test_sim'] > low_tt) &
+                                                (prediction_df['max_max_train_test_sim'] <= high_tt) &
+                                                (prediction_df['ground_truth_similarity'] > low_pw) &
+                                                (prediction_df['ground_truth_similarity'] <= high_pw)]
+
+            count_task = delayed(len)(relevant_values)
+            rmse_task = delayed(np.sqrt)(delayed(np.nanmean)(np.square(relevant_values['error'].values)))
+            mae_task = delayed(np.nanmean)(np.abs(relevant_values['error'].values))
+
+            tasks.append((pairwise_sim_index, train_test_sim_index, count_task, rmse_task, mae_task))
+
+    with ProgressBar(minimum=1.0):
+        results = compute(*[task[2:] for task in tasks])    # First two elements aren't computed
+    
+    # Reconstruct grids from results
+    for idx, (pairwise_sim_index, train_test_sim_index, count_task, rmse_task, mae_task) in enumerate(tasks):
+        count_grid[pairwise_sim_index, train_test_sim_index] = results[idx][0]
+        rmse_grid[pairwise_sim_index, train_test_sim_index] = results[idx][1]
+        mae_grid[pairwise_sim_index, train_test_sim_index] = results[idx][2]
+
+    return {'count': count_grid, 'rmse_grid': rmse_grid, 'mae_grid': mae_grid, 'bounds': bounds}
