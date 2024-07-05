@@ -206,9 +206,9 @@ def main():
         # Use MS2DeepScore to embed the vectors
         if not os.path.exists(os.path.join(metric_dir, "embeddings.pkl")):
             print("Embeddings not found, creating embeddings...", flush=True)
-            # embedded_spectra = similarity_score.calculate_vectors(spectra_test)
-            embedded_spectra = similarity_score.calculate_vectors(spectra_test[0:500])        # DEBUG USING ONE EMBEDDING
-            embedded_spectra = np.tile(embedded_spectra, (int(len(spectra_test)/499), 1))
+            embedded_spectra = similarity_score.calculate_vectors(spectra_test)
+            # embedded_spectra = similarity_score.calculate_vectors(spectra_test[0:500])        # DEBUG USING ONE EMBEDDING
+            # embedded_spectra = np.tile(embedded_spectra, (int(len(spectra_test)/499), 1))
             # Create a dictionary of spectrum_ids to embeddings
             spectrumid_to_embedding_dict = {s.get("title"): e for s, e in zip(spectra_test, embedded_spectra)}
             pickle.dump(spectrumid_to_embedding_dict, open(os.path.join(metric_dir, "embeddings.pkl"), "wb"))
@@ -235,8 +235,8 @@ def main():
         presampled_pairs['error'] = (presampled_pairs['predicted_similarity'] - presampled_pairs['ground_truth_similarity']).abs()
 
         # Persist the dataframe into memory, can be very memory intensive
-        print("Persisting Dataframe...", flush=True)
-        presampled_pairs = presampled_pairs.persist()
+        # print("Persisting Dataframe...", flush=True)
+        # presampled_pairs = presampled_pairs.persist()
 
         print(presampled_pairs.head(10))
         
@@ -258,6 +258,7 @@ def main():
         print("Computing Train-Test Similarity Dependent Losses...")
         similarity_dependent_metrics_mean = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='mean')
         similarity_dependent_metrics_max = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='max')
+        similarity_dependent_metrics_asms = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='asms')
         print("Done.", flush=True)
 
         if False:   # Not currently implemented for dask
@@ -304,28 +305,45 @@ def main():
             plt.savefig(os.path.join(metric_dir, 'heatmap_nan_counts.png'))
         
             
-        # Train-Test Similarity Dependent Losses Aggregated
+        # Train-Test Similarity Dependent Losses Aggregated (Max)
         print("Creating Train-Test Similarity Dependent Losses Aggregated Plot", flush=True)
         plt.figure(figsize=(12, 9))
         plt.bar(np.arange(len(similarity_dependent_metrics_max["rmses"]),), similarity_dependent_metrics_max["rmses"],)
         plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
         plt.xlabel("Max Test-Train Stuctural Similarity")
-        plt.ylabel("Max Test-Train Stuctural Similarity")
         plt.ylabel("RMSE")
-        plt.xlabel("Tanimoto score bin")
         plt.xticks(np.arange(len(similarity_dependent_metrics_max["rmses"])), [f"{a:.2f} to < {b:.2f}" for (a, b) in similarity_dependent_metrics_max["bounds"]], rotation='vertical')
         plt.grid(True)
-        plt.savefig(os.path.join(metric_dir, 'train_test_rmse.png'))
+        plt.savefig(os.path.join(metric_dir, 'train_test_rmse_max.png'))
+
+        # Train-Test Similarity Dependent Losses Aggregated (Mean)
+        print("Creating Train-Test Similarity Dependent Losses Aggregated Plot", flush=True)
+        plt.figure(figsize=(12, 9))
+        plt.bar(np.arange(len(similarity_dependent_metrics_mean["rmses"]),), similarity_dependent_metrics_mean["rmses"],)
+        plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
+        plt.xlabel("Mean(Max(Test-Train Stuctural Similarity))")
+        plt.ylabel("RMSE")
+        plt.xticks(np.arange(len(similarity_dependent_metrics_mean["rmses"])), [f"{a:.2f} to < {b:.2f}" for (a, b) in similarity_dependent_metrics_max["bounds"]], rotation='vertical')
+        plt.grid(True)
+        plt.savefig(os.path.join(metric_dir, 'train_test_rmse_mean.png'))
+
+        # Train-Test Similarity Dependent Losses Aggregated (ASMS - Left structure based aggregation)
+        print("Creating Train-Test Similarity Dependent Losses Aggregated Plot", flush=True)
+        plt.figure(figsize=(12, 9))
+        plt.bar(np.arange(len(similarity_dependent_metrics_asms["rmses"]),), similarity_dependent_metrics_asms["rmses"],)
+        plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
+        plt.xlabel("Mean(Max(Test-Train Stuctural Similarity))")
+        plt.ylabel("RMSE")
+        plt.xticks(np.arange(len(similarity_dependent_metrics_asms["rmses"])), [f"{a:.2f} to < {b:.2f}" for (a, b) in similarity_dependent_metrics_max["bounds"]], rotation='vertical')
+        plt.grid(True)
+        plt.savefig(os.path.join(metric_dir, 'train_test_rmse_asms.png'))
         
        
         # MS2DeepScore Tanimoto Dependent Losses Plot
-        # ref_score_bins = np.linspace(0,1.0, 11)   # original
-        ref_score_bins = np.linspace(0.2, 1, 17)    # to match other figures
 
         print("Computing Tanimoto Dependent Losses...", flush=True)
-        tanimoto_dependent_dict = tanimoto_dependent_losses(presampled_pairs, ref_score_bins)
+        tanimoto_dependent_dict = tanimoto_dependent_losses(presampled_pairs, np.linspace(0,1.0, 11))
 
-        
         metric_dict = {}
         metric_dict["bin_content"]      = tanimoto_dependent_dict["bin_content"]
         metric_dict["nan_bin_content"]  = tanimoto_dependent_dict["nan_bin_content"]
@@ -339,6 +357,8 @@ def main():
         pickle.dump(similarity_dependent_metrics_mean, open(train_test_metric_path, "wb"))
         train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_max.pkl")
         pickle.dump(similarity_dependent_metrics_max, open(train_test_metric_path, "wb"))
+        train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_asms.pkl")
+        pickle.dump(similarity_dependent_metrics_asms, open(train_test_metric_path, "wb"))
         metric_path = os.path.join(metric_dir, "metrics.pkl")
         pickle.dump(metric_dict, open(metric_path, "wb"))
         # Fixed-Tanimoto, Train-Test Dependent Plot
@@ -385,21 +405,48 @@ def main():
         # spec2vec_percentile_plot(predictions, scores_ref, metric_dir)
 
         # Pairwise Similarity, Train-Test Distance Heatmap
+        train_test_similarity_bins = np.linspace(0.2, 1, 17)    # to match other figures
+        pairwise_similarity_bins   = np.linspace(0.0, 1, 21)    # to match other figures
         print("Creating Pairwise & Train-Test Similarity Heatmap", flush=True)
-        pw_tt_metrics = pairwise_train_test_dependent_heatmap(presampled_pairs, ref_score_bins)
+        pw_tt_metrics = pairwise_train_test_dependent_heatmap(presampled_pairs, pairwise_similarity_bins, train_test_similarity_bins)
         # print('pw_tt_metrics', pw_tt_metrics)
         pw_tt_metric_path = os.path.join(metric_dir, "pairwise_train_test_metrics.pkl")
         pickle.dump(pw_tt_metrics, open(pw_tt_metric_path, "wb"))
+        # Set any -1 values to nan
+        pw_tt_metrics['rmse_grid'] = np.where(pw_tt_metrics['rmse_grid'] == -1, np.nan, pw_tt_metrics['rmse_grid'])
         plt.figure(figsize=grid_fig_size)
-        plt.imshow(pw_tt_metrics['rmse_grid'], vmin=0, vmax=1)
+        # pw_tt_metrics['rmse_grid'] first index modulates the pairwise similarity, second index modulates the train-test similarity
+        # imshow is transposed so that the pairwise similarity is on the y-axis
+        plt.imshow(pw_tt_metrics['rmse_grid'], origin='lower')
         plt.colorbar()
         plt.title('Pairwise & Train-Test Dependent RMSE')
-        plt.xlabel('Pairwise Structural Similarity')
-        plt.ylabel('Max Test-Train Structural Similarity')
-        bounds = pw_tt_metrics['bounds']
-        plt.xticks(range(len(pw_tt_metrics['bounds'])), [f"({bounds[0][i][0]:.2f}-{bounds[0][i][1]:.2f})" for i in range(len(bounds))], rotation=90)
-        plt.yticks(range(len(pw_tt_metrics['bounds'])), [f"({bounds[0][i][0]:.2f}-{bounds[0][i][1]:.2f})" for i in range(len(bounds))])
+        plt.ylabel('Pairwise Structural Similarity')
+        plt.xlabel('Max Test-Train Structural Similarity')
+        bounds = np.array(pw_tt_metrics['bounds'])
+        print('bounds.shape', bounds.shape)
+        x_ticks = bounds[0,:,1,:]
+        plt.xticks(range(x_ticks.shape[0]), [f"({x_ticks[i][0].item():.2f}-{x_ticks[i][1].item():.2f})" for i in range(x_ticks.shape[0])], rotation=90)
+        plt.xlim(0, bounds.shape[1])
+        y_ticks = bounds[:,0,0,:]
+        plt.yticks(range(y_ticks.shape[0]), [f"({y_ticks[i][1].item():.2f}-{y_ticks[i][1].item():.2f})" for i in range(y_ticks.shape[0])])
         plt.savefig(os.path.join(metric_dir, 'pairwise_train_test_heatmap.png'), bbox_inches="tight")
+
+        # Pairwise Similarity, Train-Test Distance Heatmap (Counts)
+        plt.figure(figsize=grid_fig_size)
+        counts = pw_tt_metrics['count']
+        # Transform counts by log base 10 +1
+        counts = np.log10(counts + 1)
+        plt.imshow(counts, vmin=0, origin='lower')
+        plt.colorbar()
+        plt.title('Pairwise & Train-Test Dependent Counts')
+        plt.ylabel('Pairwise Structural Similarity')
+        plt.xlabel('Max Test-Train Structural Similarity')
+        x_ticks = bounds[0,:,1,:]
+        plt.xticks(range(x_ticks.shape[0]), [f"({x_ticks[i][0].item():.2f}-{x_ticks[i][1].item():.2f})" for i in range(x_ticks.shape[0])], rotation=90)
+        plt.xlim(0, bounds.shape[1])
+        y_ticks = bounds[:,0,0,:]
+        plt.yticks(range(y_ticks.shape[0]), [f"({y_ticks[i][0].item():.2f}-{y_ticks[i][1].item():.2f})" for i in range(y_ticks.shape[0])])
+        plt.savefig(os.path.join(metric_dir, 'pairwise_train_test_heatmap_counts.png'), bbox_inches="tight")
         
         # Train-Test Similarity Bar Plot
         # Pretty sure this is the same as 'Train-Test Dependent RMSE' plot
