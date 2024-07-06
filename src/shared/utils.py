@@ -4,7 +4,9 @@ from matchms.filtering import add_fingerprint
 from matchms.similarity import FingerprintSimilarity
 from dask import delayed, compute
 from dask.diagnostics import ProgressBar
+from concurrent.futures import ThreadPoolExecutor
 import dask
+import os
 from tqdm import tqdm
 
 def get_structural_similarity_matrix(a, a_labels, b=None, b_labels=None, fp_type='', similarity_measure="jaccard"):
@@ -31,7 +33,7 @@ def train_test_similarity_dependent_losses(prediction_df, ref_score_bins, mode='
     ref_scores_bins_inclusive = ref_score_bins.copy()
     ref_scores_bins_inclusive[-1] = np.inf
     
-    assert mode in ['max', 'mean']
+    assert mode in ['max', 'mean', 'asms']
     
     tasks = []
     for i in range(len(ref_scores_bins_inclusive)-1):
@@ -44,6 +46,9 @@ def train_test_similarity_dependent_losses(prediction_df, ref_score_bins, mode='
         elif mode == 'mean':
             relevant_rows = prediction_df.loc[(prediction_df['mean_max_train_test_sim'] > low) &
                                               (prediction_df['mean_max_train_test_sim'] <= high)]
+        elif mode == 'asms':    # At ASMS we used the max similarity to the test set for the left spectrum to bin RMSEs
+            relevant_rows = prediction_df.loc[(prediction_df['inchikey1_max_test_sim'] > low) &
+                                              (prediction_df['inchikey1_max_test_sim'] <= high)]
         else:
             raise ValueError(f"Unknown mode {mode}")
 
@@ -52,7 +57,8 @@ def train_test_similarity_dependent_losses(prediction_df, ref_score_bins, mode='
         rmses.append(delayed(np.sqrt)(delayed(np.nanmean)(np.square(relevant_rows['error'].values))))
     
     with ProgressBar(minimum=1.0):
-        bin_content, maes, rmses = compute(bin_content, maes, rmses)
+        with dask.config.set(pool=ThreadPoolExecutor(min(4, os.cpu_count()))):
+            bin_content, maes, rmses = compute(bin_content, maes, rmses)
 
     # Ensure bounds are ordered
     for i in range(len(bounds)-1):
@@ -262,25 +268,23 @@ def fixed_tanimoto_train_test_similarity_dependent(prediction_df, train_test_sim
     # First index is the train-test similarity bin, second index is the reference score bin
     return output_dict
 
-def pairwise_train_test_dependent_heatmap(prediction_df, similarity_bins):
-
-
-    count_grid = np.zeros((len(similarity_bins)-1, len(similarity_bins)-1))
-    rmse_grid = np.ones((len(similarity_bins)-1, len(similarity_bins)-1)) * -1
-    mae_grid = np.ones((len(similarity_bins)-1, len(similarity_bins)-1)) * -1
+def pairwise_train_test_dependent_heatmap(prediction_df, pairwise_similarity_bins, train_test_similarity_bins):
+    count_grid = np.zeros((len(pairwise_similarity_bins)-1, len(pairwise_similarity_bins)-1))
+    rmse_grid = np.ones((len(pairwise_similarity_bins)-1, len(pairwise_similarity_bins)-1)) * -1
+    mae_grid = np.ones((len(pairwise_similarity_bins)-1, len(pairwise_similarity_bins)-1)) * -1
     bounds = []
     
     tasks = []
-    for pairwise_sim_index in range(len(similarity_bins)-1):
-        low_pw = similarity_bins[pairwise_sim_index]
-        high_pw = similarity_bins[pairwise_sim_index+1]
+    for pairwise_sim_index in range(len(pairwise_similarity_bins)-1):
+        low_pw = pairwise_similarity_bins[pairwise_sim_index]
+        high_pw = pairwise_similarity_bins[pairwise_sim_index+1]
         bounds.append([])
 
-        for train_test_sim_index in range(len(similarity_bins)-1):
-            low_tt = similarity_bins[train_test_sim_index]
-            high_tt = similarity_bins[train_test_sim_index+1]
+        for train_test_sim_index in range(len(train_test_similarity_bins)-1):
+            low_tt = train_test_similarity_bins[train_test_sim_index]
+            high_tt = train_test_similarity_bins[train_test_sim_index+1]
 
-            bounds[pairwise_sim_index].append((low_tt, high_tt))
+            bounds[pairwise_sim_index].append(((low_pw, high_pw), (low_tt, high_tt)))
 
             relevant_values = prediction_df.loc[(prediction_df['max_max_train_test_sim'] > low_tt) &
                                                 (prediction_df['max_max_train_test_sim'] <= high_tt) &

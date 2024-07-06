@@ -203,36 +203,47 @@ def main():
         similarity_score = MS2DeepScore(model,)
         df_labels = [s.get("spectrum_id") for s in spectra_test]
 
-        # Use MS2DeepScore to embed the vectors
-        if not os.path.exists(os.path.join(metric_dir, "embeddings.pkl")):
-            print("Embeddings not found, creating embeddings...", flush=True)
-            embedded_spectra = similarity_score.calculate_vectors(spectra_test)
-            # embedded_spectra = similarity_score.calculate_vectors(spectra_test[0:500])        # DEBUG USING ONE EMBEDDING
-            # embedded_spectra = np.tile(embedded_spectra, (int(len(spectra_test)/499), 1))
-            # Create a dictionary of spectrum_ids to embeddings
-            spectrumid_to_embedding_dict = {s.get("title"): e for s, e in zip(spectra_test, embedded_spectra)}
-            pickle.dump(spectrumid_to_embedding_dict, open(os.path.join(metric_dir, "embeddings.pkl"), "wb"))
-        else:
-            print("Loading embeddings...", flush=True)
-            spectrumid_to_embedding_dict = pickle.load(open(os.path.join(metric_dir, "embeddings.pkl"), "rb"))       
+        dask_output_path = os.path.join(metric_dir, "dask_output.parquet")
+
+        if not os.path.exists(dask_output_path):
+            # Use MS2DeepScore to embed the vectors
+            if not os.path.exists(os.path.join(metric_dir, "embeddings.pkl")):
+                print("Embeddings not found, creating embeddings...", flush=True)
+                embedded_spectra = similarity_score.calculate_vectors(spectra_test)
+                # embedded_spectra = similarity_score.calculate_vectors(spectra_test[0:500])        # DEBUG USING ONE EMBEDDING
+                # embedded_spectra = np.tile(embedded_spectra, (int(len(spectra_test)/499), 1))
+                # Create a dictionary of spectrum_ids to embeddings
+                spectrumid_to_embedding_dict = {s.get("title"): e for s, e in zip(spectra_test, embedded_spectra)}
+                pickle.dump(spectrumid_to_embedding_dict, open(os.path.join(metric_dir, "embeddings.pkl"), "wb"))
+            else:
+                print("Loading embeddings...", flush=True)
+                spectrumid_to_embedding_dict = pickle.load(open(os.path.join(metric_dir, "embeddings.pkl"), "rb"))       
+            
+            # Get first two partitons #DEBUG
+            # presampled_pairs = presampled_pairs.partitions[:3]
+
+            # Compute parallel scores for all pairs
+            meta = _dask_cosine(presampled_pairs.head(2),
+                                embedding_dict=spectrumid_to_embedding_dict)
+            presampled_pairs['predicted_similarity'] = presampled_pairs.map_partitions(_dask_cosine,
+                                                                embedding_dict=spectrumid_to_embedding_dict,
+                                                                meta=meta   # Must provide metadata to avoid fake inputs used for type prediction
+                                                                )
+
+            # Replace -1 with nan for predictions
+            presampled_pairs.predicted_similarity = presampled_pairs.predicted_similarity.replace(-1, np.nan)
         
-        # Get first two partitons #DEBUG
-        # presampled_pairs = presampled_pairs.partitions[:3]
+            # Add the ground_true value to the predictions
+            print("Calculating Error")
+            presampled_pairs['error'] = (presampled_pairs['predicted_similarity'] - presampled_pairs['ground_truth_similarity']).abs()
 
-        # Compute parallel scores for all pairs
-        meta = _dask_cosine(presampled_pairs.head(2),
-                            embedding_dict=spectrumid_to_embedding_dict)
-        presampled_pairs['predicted_similarity'] = presampled_pairs.map_partitions(_dask_cosine,
-                                                            embedding_dict=spectrumid_to_embedding_dict,
-                                                            meta=meta   # Must provide metadata to avoid fake inputs used for type prediction
-                                                            )
 
-        # Replace -1 with nan for predictions
-        presampled_pairs.predicted_similarity = presampled_pairs.predicted_similarity.replace(-1, np.nan)
-       
-        # Add the ground_true value to the predictions
-        print("Calculating Error")
-        presampled_pairs['error'] = (presampled_pairs['predicted_similarity'] - presampled_pairs['ground_truth_similarity']).abs()
+            # Save the dataframe to disk
+            print("Saving Dataframe to Disk...", flush=True)
+            presampled_pairs.repartition(partition_size='100MB').to_parquet(dask_output_path)
+            print("\tDone.", flush=True)
+        # Reload with the error column already computed
+        presampled_pairs = dd.read_parquet(dask_output_path)
 
         # Persist the dataframe into memory, can be very memory intensive
         # print("Persisting Dataframe...", flush=True)
@@ -253,13 +264,6 @@ def main():
         print("Overall NAN RMSE (from evaluate()):", da.sqrt(da.nanmean(da.square(presampled_pairs['error'].values))).compute())
         print("Overall NAN MAE (from evaluate()):", da.nanmean(da.abs(presampled_pairs['error'])).compute())
         print("Nan Count:", presampled_pairs['error'].isna().sum().compute())
-
-        # Train-Test Similarity Dependent Losses
-        print("Computing Train-Test Similarity Dependent Losses...")
-        similarity_dependent_metrics_mean = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='mean')
-        similarity_dependent_metrics_max = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='max')
-        similarity_dependent_metrics_asms = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='asms')
-        print("Done.", flush=True)
 
         if False:   # Not currently implemented for dask
             train_test_grid = train_test_similarity_heatmap(predictions, train_test_similarities, ref_score_bins)
@@ -307,6 +311,7 @@ def main():
             
         # Train-Test Similarity Dependent Losses Aggregated (Max)
         print("Creating Train-Test Similarity Dependent Losses Aggregated Plot", flush=True)
+        similarity_dependent_metrics_max = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='max')
         plt.figure(figsize=(12, 9))
         plt.bar(np.arange(len(similarity_dependent_metrics_max["rmses"]),), similarity_dependent_metrics_max["rmses"],)
         plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
@@ -315,28 +320,41 @@ def main():
         plt.xticks(np.arange(len(similarity_dependent_metrics_max["rmses"])), [f"{a:.2f} to < {b:.2f}" for (a, b) in similarity_dependent_metrics_max["bounds"]], rotation='vertical')
         plt.grid(True)
         plt.savefig(os.path.join(metric_dir, 'train_test_rmse_max.png'))
+        train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_max.pkl")
+        pickle.dump(similarity_dependent_metrics_max, open(train_test_metric_path, "wb"))
+        del similarity_dependent_metrics_max
+        gc.collect()
 
         # Train-Test Similarity Dependent Losses Aggregated (Mean)
         print("Creating Train-Test Similarity Dependent Losses Aggregated Plot", flush=True)
+        similarity_dependent_metrics_mean = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='mean')
         plt.figure(figsize=(12, 9))
         plt.bar(np.arange(len(similarity_dependent_metrics_mean["rmses"]),), similarity_dependent_metrics_mean["rmses"],)
         plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
         plt.xlabel("Mean(Max(Test-Train Stuctural Similarity))")
         plt.ylabel("RMSE")
-        plt.xticks(np.arange(len(similarity_dependent_metrics_mean["rmses"])), [f"{a:.2f} to < {b:.2f}" for (a, b) in similarity_dependent_metrics_max["bounds"]], rotation='vertical')
+        plt.xticks(np.arange(len(similarity_dependent_metrics_mean["rmses"])), [f"{a:.2f} to < {b:.2f}" for (a, b) in similarity_dependent_metrics_mean["bounds"]], rotation='vertical')
         plt.grid(True)
         plt.savefig(os.path.join(metric_dir, 'train_test_rmse_mean.png'))
+        train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_mean.pkl")
+        pickle.dump(similarity_dependent_metrics_mean, open(train_test_metric_path, "wb"))
+        del similarity_dependent_metrics_mean
+        gc.collect()
 
         # Train-Test Similarity Dependent Losses Aggregated (ASMS - Left structure based aggregation)
         print("Creating Train-Test Similarity Dependent Losses Aggregated Plot", flush=True)
+        similarity_dependent_metrics_asms = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='asms')
         plt.figure(figsize=(12, 9))
         plt.bar(np.arange(len(similarity_dependent_metrics_asms["rmses"]),), similarity_dependent_metrics_asms["rmses"],)
         plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
         plt.xlabel("Mean(Max(Test-Train Stuctural Similarity))")
         plt.ylabel("RMSE")
-        plt.xticks(np.arange(len(similarity_dependent_metrics_asms["rmses"])), [f"{a:.2f} to < {b:.2f}" for (a, b) in similarity_dependent_metrics_max["bounds"]], rotation='vertical')
+        plt.xticks(np.arange(len(similarity_dependent_metrics_asms["rmses"])), [f"{a:.2f} to < {b:.2f}" for (a, b) in similarity_dependent_metrics_asms["bounds"]], rotation='vertical')
         plt.grid(True)
         plt.savefig(os.path.join(metric_dir, 'train_test_rmse_asms.png'))
+        train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_asms.pkl")
+        pickle.dump(similarity_dependent_metrics_asms, open(train_test_metric_path, "wb"))
+        del similarity_dependent_metrics_asms
         
        
         # MS2DeepScore Tanimoto Dependent Losses Plot
@@ -353,12 +371,7 @@ def main():
         metric_dict["rmse"] = overall_rmse
         metric_dict["mae"]  = overall_mae
         
-        train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_mean.pkl")
-        pickle.dump(similarity_dependent_metrics_mean, open(train_test_metric_path, "wb"))
-        train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_max.pkl")
-        pickle.dump(similarity_dependent_metrics_max, open(train_test_metric_path, "wb"))
-        train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_asms.pkl")
-        pickle.dump(similarity_dependent_metrics_asms, open(train_test_metric_path, "wb"))
+
         metric_path = os.path.join(metric_dir, "metrics.pkl")
         pickle.dump(metric_dict, open(metric_path, "wb"))
         # Fixed-Tanimoto, Train-Test Dependent Plot
