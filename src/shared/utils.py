@@ -57,7 +57,7 @@ def train_test_similarity_dependent_losses(prediction_df, ref_score_bins, mode='
         rmses.append(delayed(np.sqrt)(delayed(np.nanmean)(np.square(relevant_rows['error'].values))))
     
     with ProgressBar(minimum=1.0):
-        with dask.config.set(pool=ThreadPoolExecutor(min(4, os.cpu_count()))):
+        # with dask.config.set(pool=ThreadPoolExecutor(min(4, os.cpu_count()))):
             bin_content, maes, rmses = compute(bin_content, maes, rmses)
 
     # Ensure bounds are ordered
