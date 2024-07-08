@@ -37,7 +37,7 @@ def main():
                                                 help='The maximum difference between collision energies of two spectra to be considered\
                                                     a pair. Default is <= 5. "-1.0" means collision energies are not filtered. \
                                                     If no collision enegy is available for either spectra, both will be included. Only applys in memory efficent mode.')
-    parser.add_argument('--no_pm_requirement', action='store_true', help='Do not require precursor mass difference to be less than 200. Only applys in memory efficent mode.', default=False)
+    # parser.add_argument('--no_pm_requirement', action='store_true', help='Do not require precursor mass difference to be less than 200. Only applys in memory efficent mode.', default=False)
 
     args = parser.parse_args()
     
@@ -60,12 +60,13 @@ def main():
             raise ValueError("mass_analyzer_lst is only compatible with memory efficient mode.")
         if args.collision_energy_thresh != 5.0:
             raise ValueError("collision_energy_thresh is only compatible with memory efficient mode.")
-        if args.no_pm_requirement:
-            raise ValueError("no_pm_requirement is only compatible with memory efficient mode.")
+        # if args.no_pm_requirement:
+        #     raise ValueError("no_pm_requirement is only compatible with memory efficient mode.")
 
         
 
     current_time = datetime.now().strftime("%d_%m_%Y_%H_%M_%S")
+    print(os.path.join(args.save_dir, 'logs', f"presampling_{current_time}.log"), flush=True)
     
     logging.basicConfig(format='[%(levelname)s]: %(message)s',
                     level=logging.DEBUG,
@@ -150,8 +151,7 @@ def main():
                                                         ignore_equal_pairs=True,
                                                         merge_on_lst=args.merge_on_lst,
                                                         mass_analyzer_lst=args.mass_analyzer_lst,
-                                                        collision_energy_thresh=args.collision_energy_thresh,
-                                                        skip_precursor_mz=args.no_pm_requirement)
+                                                        collision_energy_thresh=args.collision_energy_thresh,)
                                                         
 
         else:

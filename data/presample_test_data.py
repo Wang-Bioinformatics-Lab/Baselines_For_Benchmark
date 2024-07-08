@@ -11,17 +11,19 @@ import pandas as pd
 import dask.dataframe as dd
 import time
 
+import pickle
+
 from generator_filtered_pairs import FilteredPairsGenerator
 
 def build_pairs( main_inchikey,
-                        inchikey_list,
-                        tanimoto_df,
-                        summary,
-                        train_test_sim_dict,
-                        pairs_generator=None,
-                        temp_file_dir=None,
-                        buffer_size=7_900_000,
-                        subsample=100_000):
+                inchikey_list,
+                tanimoto_df,
+                summary,
+                train_test_sim_dict,
+                pairs_generator=None,
+                temp_file_dir=None,
+                buffer_size=7_900_000,
+                subsample=100_000):
     # Buffer Size Calculation:
     # 80 gb (leaving 40 for overhead) / 32 / 254 bytes per row * 0.75 for extra safety
 
@@ -42,7 +44,7 @@ def build_pairs( main_inchikey,
         min_main_train_test_sim  = train_test_sim_dict[main_inchikey]['min']
         mean_main_train_test_sim = train_test_sim_dict[main_inchikey]['mean']
 
-        columns=['inchikey1', 'inchikey2','spectrumid1', 'spectrumid2', 'ground_truth_similarity', 'mean_mean_train_test_sim',
+        columns=['inchikey1', 'inchikey2','spectrumid1', 'spectrumid2', 'ground_truth_similarity', 'inchikey1_max_test_sim', 'inchikey2_max_test_sim', 'mean_max_train_test_sim', 'mean_mean_train_test_sim',
                 'max_max_train_test_sim', 'max_mean_train_test_sim', 'max_min_train_test_sim']
 
 
@@ -54,6 +56,7 @@ def build_pairs( main_inchikey,
             min_j_train_test_sim  = train_test_sim_dict[inchikey_j]['min']
             mean_j_train_test_sim = train_test_sim_dict[inchikey_j]['mean']
             mean_mean_train_test_sim = np.mean([mean_main_train_test_sim, mean_j_train_test_sim])
+            mean_max_train_test_sim = np.mean([max_main_train_test_sim, max_j_train_test_sim])
             max_max_train_test_sim = max(max_main_train_test_sim, max_j_train_test_sim)
             max_mean_train_test_sim = max(mean_main_train_test_sim, mean_j_train_test_sim)
             max_min_train_test_sim = max(min_main_train_test_sim, min_j_train_test_sim)
@@ -98,6 +101,9 @@ def build_pairs( main_inchikey,
                                         spectrum_id_i,
                                         spectrum_id_j,
                                         gt,
+                                        max_main_train_test_sim,
+                                        max_j_train_test_sim,
+                                        mean_max_train_test_sim,
                                         mean_mean_train_test_sim,
                                         max_max_train_test_sim,
                                         max_mean_train_test_sim,
@@ -148,7 +154,7 @@ def build_pairs( main_inchikey,
 
         raise ki
 
-    return hdf_path # Cleanup in serial process after concat
+    return hdf_path.name # Cleanup in serial process after concat
 
 def build_pairs_subsampled(pairwise_similarities:pd.DataFrame,
                             train_test_similarities:pd.DataFrame,
@@ -158,18 +164,26 @@ def build_pairs_subsampled(pairwise_similarities:pd.DataFrame,
                             sampling_threshold:int=100_000,
                             buffer_size:int=100_000,
                             pairwise_index_range:tuple=(0, 20),
-                            train_test_index_range:tuple=(0, 20),
+                            train_test_index_range:tuple=(0, 16),
                             temp_file_dir=None):
                                 
-    similarity_counts = np.zeros((20,20)) # First dimension is pairwise, second is mean(max(train-test similarity))
+    similarity_counts = np.zeros((20,16)) # First dimension is pairwise, second is mean(max(train-test similarity))
 
-    def _get_lower_bound(x):
+    def _get_lower_bound_pw(x):
         # Returns mapping to one of 20 bins within 0.2 to 1.0
-        return np.linspace(0.2, 1.0, 21)[x]
-    def _get_upper_bound(x):
-        out =  np.linspace(0.2, 1.0, 21)[x+1]
+        return np.linspace(0.0, 1.0, 21)[x]
+    def _get_upper_bound_pw(x):
+        out =  np.linspace(0.0, 1.0, 21)[x+1]
         if x == 19:
             out = 1.1   # Include 1.0
+        return out
+    def _get_lower_bound_tt(x):
+        # Returns mapping to one of 20 bins within 0.2 to 1.0
+        return np.linspace(0.2, 1.0, 17)[x]
+    def _get_upper_bound_tt(x):
+        out =  np.linspace(0.2, 1.0, 17)[x+1]
+        if x == 19:
+            out = 1.1
         return out
 
     curr_buffer_size = buffer_size
@@ -182,19 +196,19 @@ def build_pairs_subsampled(pairwise_similarities:pd.DataFrame,
         hdf_path = tempfile.NamedTemporaryFile(dir=temp_file_dir, delete=False)
         # Calculate the similarity list in a memory-efficent manner
         hdf_store = pd.HDFStore(hdf_path.name)
-        columns=['inchikey1', 'inchikey2','spectrumid1', 'spectrumid2', 'ground_truth_similarity', 'mean_max_train_test_sim', 'mean_mean_train_test_sim',
+        columns=['inchikey1', 'inchikey2','spectrumid1', 'spectrumid2', 'ground_truth_similarity', 'inchikey1_max_test_sim', 'inchikey2_max_test_sim', 'mean_max_train_test_sim', 'mean_mean_train_test_sim',
                 'max_max_train_test_sim', 'max_mean_train_test_sim', 'max_min_train_test_sim']
 
         # Iterate over bins and subsample spectra by inchikeys
         for i in range(pairwise_index_range[0], pairwise_index_range[1]):
             # Should be an array of [(inchikey1, inchikey2, pairwise_similarity), ...]
-            pairwise_relevant = pairwise_similarities[(pairwise_similarities['value'] >= _get_lower_bound(i)) &
-                                                        (pairwise_similarities['value'] < _get_upper_bound(i))]
+            pairwise_relevant = pairwise_similarities[(pairwise_similarities['value'] >= _get_lower_bound_pw(i)) &
+                                                        (pairwise_similarities['value'] < _get_upper_bound_pw(i))]
             # print('pairwise_relevant', pairwise_relevant)
 
             for j in range(train_test_index_range[0], train_test_index_range[1]):
-                train_test_relevant = train_test_similarities[(train_test_similarities['average_max_similarity'] >= _get_lower_bound(j)) &
-                                                            (train_test_similarities['average_max_similarity'] < _get_upper_bound(j))]
+                train_test_relevant = train_test_similarities[(train_test_similarities['average_max_similarity'] >= _get_lower_bound_tt(j)) &
+                                                            (train_test_similarities['average_max_similarity'] < _get_upper_bound_tt(j))]
                 # print('train_test_relevant', train_test_relevant)
                 
                 # Get intersection of pairwise_relevant and train_test_relevant pairs
@@ -261,7 +275,7 @@ def build_pairs_subsampled(pairwise_similarities:pd.DataFrame,
                         
 
                     # Add to output
-                    output_buffer.append((inchikey1, inchikey2, spectrum_id1, spectrum_id2, gt,
+                    output_buffer.append((inchikey1, inchikey2, spectrum_id1, spectrum_id2, gt, max_i_train_test_sim, max_j_train_test_sim,
                                         mean_max_train_test_sim, mean_mean_train_test_sim, max_max_train_test_sim,
                                         max_mean_train_test_sim, max_min_train_test_sim))
                     curr_buffer_size -= 1
@@ -307,6 +321,7 @@ def build_pairs_subsampled(pairwise_similarities:pd.DataFrame,
 def build_test_pairs_list(  test_summary_path:str,
                             pairwise_similarities_path:str,
                             train_test_similarity_path:str,
+                            test_data_path:str,
                             output_path:str,
                             n_jobs:int=1,
                             subsample:int=None,
@@ -337,6 +352,12 @@ def build_test_pairs_list(  test_summary_path:str,
             test_summary['InChIKey_smiles_14'] = test_summary['InChIKey_smiles'].str[:14]
         else:
             raise ValueError("No InChIKey, InChIKey_smiles, or InChIKey_smiles_14 column found in test summary file.")
+    # Remove anything that doesn't have spectra
+    test_spectra = pickle.load(open(test_data_path, 'rb'))
+    test_ids = set([spectrum.get("spectrum_id") for spectrum in test_spectra])
+    test_summary = test_summary[test_summary['spectrum_id'].isin(test_ids)]
+    del test_spectra, test_ids
+
     # Index by inchikey_14
     test_summary = test_summary.set_index('InChIKey_smiles_14')
 
@@ -366,6 +387,24 @@ def build_test_pairs_list(  test_summary_path:str,
     # Remove anything that doesn't have an inchikey in the pairwise similarities, it didn't make it through pre-processing
     unique_test_inchikeys = [inchikey for inchikey in unique_test_inchikeys if inchikey in tanimoto_df.index]
     test_summary = test_summary.loc[unique_test_inchikeys]
+    # Remove bits we can with filtering
+    if filter:
+        local_mass_analyzer_lst = mass_analyzer_lst.split(';') if mass_analyzer_lst is not None else None
+        if mass_analyzer_lst is not None:
+            test_summary = test_summary[test_summary['msMassAnalyzer'].isin(local_mass_analyzer_lst)]
+        local_merge_on_lst = merge_on_lst.split(';') if merge_on_lst is not None else []
+        if merge_on_lst is None:
+            local_merge_on_lst = ['ms_mass_analyzer', 'ms_ionisation', 'adduct']
+        if 'ms_mass_analyzer' in local_merge_on_lst:
+            test_summary = test_summary.dropna(subset=['msMassAnalyzer'])
+        if 'ms_ionisation' in local_merge_on_lst:
+            test_summary = test_summary.dropna(subset=['msIonisation'])
+        if 'adduct' in local_merge_on_lst:
+            test_summary = test_summary.dropna(subset=['Adduct'])
+
+    # Remove the filtered parts + remove any inchikeys that have no spectra in the summary
+    unique_test_inchikeys = test_summary.index.unique()
+    tanimoto_df = tanimoto_df.loc[unique_test_inchikeys, unique_test_inchikeys]
     
     train_test_sim_dict = {}
     print("Precomputing train-test similarities...", flush=True)
@@ -429,7 +468,7 @@ def build_test_pairs_list(  test_summary_path:str,
             print(prepped_train_test_similarities)
             
             if n_jobs > 1:
-                grid = [(i, j) for i in range(0, 20) for j in range(0, 20)]
+                grid = [(i, j) for i in range(0, 20) for j in range(0, 16)]
                 outputs = Parallel(n_jobs=n_jobs)(delayed(build_pairs_subsampled)(pairwise_similarities,
                                                                                                 prepped_train_test_similarities,
                                                                                                 train_test_sim_dict,
@@ -482,6 +521,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n_jobs", type=int, default=1)
     parser.add_argument("--metadata_path", type=str, help="Path to the metadata csv file.")
+    parser.add_argument("--test_data_path", type=str, help="Path to the test data pickle file.")
     parser.add_argument("--pairwise_similarities_path", type=str, help="Path to the pairwise similarities csv file.")
     parser.add_argument("--train_test_similarities_path", help="Path to the train-test similarity csv file.")
     parser.add_argument("--output_path", type=str, help="Path to the output directory.")
@@ -508,7 +548,9 @@ def main():
 
     metadata_path = Path(args.metadata_path)
     assert metadata_path.exists(), f"Metadata file {metadata_path} does not exist."
-    pairwise_similarities_path = Path(args.pairwise_similarities_path)
+    test_data_path = Path(args.test_data_path)
+    assert test_data_path.exists(), f"Test data file {test_data_path} does not exist."
+    pairwise_similarities_path = Path(args.pairwise_similarities_path)    
     assert pairwise_similarities_path.exists(), f"Pairwise similarities file {pairwise_similarities_path} does not exist."
     train_test_similarities_path = Path(args.train_test_similarities_path)
     assert train_test_similarities_path.exists(), f"Train-test similarities file {train_test_similarities_path} does not exist."
@@ -524,6 +566,7 @@ def main():
     build_test_pairs_list(metadata_path,
                           pairwise_similarities_path,
                           train_test_similarities_path,
+                          test_data_path,
                           output_path,
                           n_jobs=args.n_jobs,
                           subsample=args.subsample,

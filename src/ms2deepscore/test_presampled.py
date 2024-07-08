@@ -30,6 +30,7 @@ import tempfile
 
 import dask.dataframe as dd
 import dask.array as da
+from dask.distributed import LocalCluster
 from time import time
 
 from dask.diagnostics import ProgressBar
@@ -158,6 +159,11 @@ def main():
     # Check if GPU is available
     print("GPU is", "available" if tf.config.list_physical_devices('GPU') else "NOT AVAILABLE", flush=True)
     
+    # Initalize dask cluster
+    cluster = LocalCluster(n_workers=4, threads_per_worker=2)
+    client = cluster.get_client()
+    
+
     n_most_recent = args.n_most_recent
     # List available models
     print("Available models:")
@@ -314,6 +320,9 @@ def main():
         similarity_dependent_metrics_max = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='max')
         plt.figure(figsize=(12, 9))
         plt.bar(np.arange(len(similarity_dependent_metrics_max["rmses"]),), similarity_dependent_metrics_max["rmses"],)
+        # Add labels on top of bars
+        for i, v in enumerate(similarity_dependent_metrics_max["rmses"]):
+            plt.text(i, v + 0.001, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
         plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
         plt.xlabel("Max Test-Train Stuctural Similarity")
         plt.ylabel("RMSE")
@@ -330,6 +339,9 @@ def main():
         similarity_dependent_metrics_mean = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='mean')
         plt.figure(figsize=(12, 9))
         plt.bar(np.arange(len(similarity_dependent_metrics_mean["rmses"]),), similarity_dependent_metrics_mean["rmses"],)
+        # Add labels on top of bars
+        for i, v in enumerate(similarity_dependent_metrics_mean["rmses"]):
+            plt.text(i, v + 0.001, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
         plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
         plt.xlabel("Mean(Max(Test-Train Stuctural Similarity))")
         plt.ylabel("RMSE")
@@ -346,6 +358,9 @@ def main():
         similarity_dependent_metrics_asms = train_test_similarity_dependent_losses(presampled_pairs, ref_score_bins, mode='asms')
         plt.figure(figsize=(12, 9))
         plt.bar(np.arange(len(similarity_dependent_metrics_asms["rmses"]),), similarity_dependent_metrics_asms["rmses"],)
+        # Add labels on top of bars
+        for i, v in enumerate(similarity_dependent_metrics_asms["rmses"]):
+            plt.text(i, v + 0.001, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
         plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
         plt.xlabel("Mean(Max(Test-Train Stuctural Similarity))")
         plt.ylabel("RMSE")
@@ -475,6 +490,11 @@ def main():
             plt.legend()
             plt.savefig(os.path.join(metric_dir, 'train_test_similarity_bar_plot.png'), bbox_inches="tight")
         
+        r2 = np.corrcoef(presampled_pairs['predicted_similarity'], presampled_pairs['ground_truth_similarity'])[0,1]**2
+        print(f"R squared: {r2:.2f}", flush=True)
+
+        # Skip the scatter plots and hexbin plots for now, not particularly useful
+        return 0
         # Score, Tanimoto Scatter Plot
         print("Creating Scatter Plot")
         plt.figure(figsize=grid_fig_size)
