@@ -268,7 +268,7 @@ def fixed_tanimoto_train_test_similarity_dependent(prediction_df, train_test_sim
     # First index is the train-test similarity bin, second index is the reference score bin
     return output_dict
 
-def pairwise_train_test_dependent_heatmap(prediction_df, pairwise_similarity_bins, train_test_similarity_bins):
+def pairwise_train_test_dependent_heatmap(prediction_df, pairwise_similarity_bins, train_test_similarity_bins, mode='max'):
     count_grid = np.zeros((len(pairwise_similarity_bins)-1, len(pairwise_similarity_bins)-1))
     rmse_grid = np.ones((len(pairwise_similarity_bins)-1, len(pairwise_similarity_bins)-1)) * -1
     mae_grid = np.ones((len(pairwise_similarity_bins)-1, len(pairwise_similarity_bins)-1)) * -1
@@ -278,18 +278,35 @@ def pairwise_train_test_dependent_heatmap(prediction_df, pairwise_similarity_bin
     for pairwise_sim_index in range(len(pairwise_similarity_bins)-1):
         low_pw = pairwise_similarity_bins[pairwise_sim_index]
         high_pw = pairwise_similarity_bins[pairwise_sim_index+1]
+        if high_pw >= 1.0:
+            high_pw = 1.1    # To include 1.0
         bounds.append([])
 
         for train_test_sim_index in range(len(train_test_similarity_bins)-1):
             low_tt = train_test_similarity_bins[train_test_sim_index]
             high_tt = train_test_similarity_bins[train_test_sim_index+1]
+            if high_tt >= 1.0:
+                high_tt = 1.1
 
             bounds[pairwise_sim_index].append(((low_pw, high_pw), (low_tt, high_tt)))
 
-            relevant_values = prediction_df.loc[(prediction_df['max_max_train_test_sim'] > low_tt) &
-                                                (prediction_df['max_max_train_test_sim'] <= high_tt) &
-                                                (prediction_df['ground_truth_similarity'] > low_pw) &
-                                                (prediction_df['ground_truth_similarity'] <= high_pw)]
+            if mode == 'max':
+                relevant_values = prediction_df.loc[(prediction_df['max_max_train_test_sim'] >= low_tt) &
+                                                    (prediction_df['max_max_train_test_sim'] < high_tt) &
+                                                    (prediction_df['ground_truth_similarity'] >= low_pw) &
+                                                    (prediction_df['ground_truth_similarity'] < high_pw)]
+            elif mode == 'mean':
+                relevant_values = prediction_df.loc[(prediction_df['mean_max_train_test_sim'] >= low_tt) &
+                                                    (prediction_df['mean_max_train_test_sim'] < high_tt) &
+                                                    (prediction_df['ground_truth_similarity'] >= low_pw) &
+                                                    (prediction_df['ground_truth_similarity'] < high_pw)]
+            elif mode == 'asms':
+                relevant_values = prediction_df.loc[(prediction_df['inchikey1_max_test_sim'] >=low_tt) &
+                                                    (prediction_df['inchikey1_max_test_sim'] < high_tt) &
+                                                    (prediction_df['ground_truth_similarity'] >= low_pw) &
+                                                    (prediction_df['ground_truth_similarity'] < high_pw)]
+            else:
+                raise ValueError(f"Unknown mode {mode}")
 
             count_task = delayed(len)(relevant_values)
             rmse_task = delayed(np.sqrt)(delayed(np.nanmean)(np.square(relevant_values['error'].values)))

@@ -13,7 +13,7 @@ echo "Performing Inference for MS2DeepScore with a basic split, filtered by pair
 cd $BIN_DIR
 
 python3 test_presampled.py --test_path $DATA_DIR"/data/ALL_GNPS_positive_test_split.pickle" \
-                 --presampled_pairs_path $DATA_DIR"/test_data/all_pairs.parquet" \
+                 --presampled_pairs_path $DATA_DIR"/test_data/all_pairs_new.parquet" \
                  --save_dir "./simple_sampling" \
                  --n_jobs 30 \
                  --model_path $MODEL_PATH

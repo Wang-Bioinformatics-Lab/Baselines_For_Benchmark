@@ -52,6 +52,11 @@ def main():
     parser.add_argument('--embedding_dim', type=int, help='Embedding dimension', default=200)
     parser.add_argument('--use_cnn_model', action='store_true', help='Use the CNN model instead of the dense model')
     parser.add_argument('--gpu', type=int, help='Which GPU to use', default=0)
+    parser.add_argument('--epochs', type=int, help='Number of epochs', default=150)
+    parser.add_argument('--no_early_stopping', action='store_true', help='Disable early stopping')
+    parser.add_argument('-lr', '--learning_rate', type=float, help='Learning rate', default=0.001)
+    parser.add_argument('--loss_bias_multiplier', type=float, help='Multiplier for the biased loss. If None, no bias is applied', default=None)
+    parser.add_argument('--dropout_rate', type=float, help='Dropout rate', default=0.2)
     args = parser.parse_args()
         
     if not os.path.isdir(args.save_dir):
@@ -59,6 +64,10 @@ def main():
     if not os.path.isdir(os.path.join(args.save_dir, 'logs')):
         os.makedirs(os.path.join(args.save_dir, 'logs'), exist_ok=True)
         
+    
+    def _biased_loss(y_true, y_pred):
+        return biased_loss(y_true, y_pred, multiplier=args.loss_bias_multiplier)
+    
     # Get current time in dd_mm_yyyy_hh_mm_ss format
     current_time = datetime.now().strftime("%d_%m_%Y_%H_%M_%S")
         
@@ -142,20 +151,23 @@ def main():
     #     #                                                   )
     #     #                                                  ).prefetch(tf.data.AUTOTUNE)
     if args.presampled_train_data_dir.endswith('hdf5'):
+        logging.info("Training is using PrebatchedGenerator")
         training_generator = PrebatchedGeneratorHDF5(
             args.presampled_train_data_dir,
             binned_spectrums_training,
             spectrum_binner
         )
     elif args.presampled_train_data_dir.endswith('feather'):
+        logging.info("Training is using PrebatchedGenerator")
         training_generator = PrebatchedGenerator(
             args.presampled_train_data_dir
         )
     else:
         raise ValueError("Data format not recognized")
 
-    if args.val_pairs_path is None:
+    if args.val_pairs_path is None and args.presampled_val_data_dir is None:
         # Used for no filtration, not prebatched
+        logging.info("Validation is using DataGeneratorAllInchikeys")
         validation_generator = DataGeneratorAllInchikeys(
             binned_spectrums_val, tanimoto_df, spectrum_binner=spectrum_binner, selected_inchikeys=validation_inchikeys, same_prob_bins=same_prob_bins,
             num_turns=10, augment_removal_max=0, augment_removal_intensity=0,
@@ -172,6 +184,7 @@ def main():
         selected_compound_pairs_val  = SelectedCompoundPairs(val_pairs, shuffle=False, same_prob_bins=same_prob_bins)
         del val_pairs
         gc.collect()
+        logging.info("Validation is using DataGeneratorCherrypickedInChi")
         validation_generator = DataGeneratorCherrypickedInChi(
             binned_spectrums_val, selected_compound_pairs_val, spectrum_binner=spectrum_binner, selected_inchikeys=validation_inchikeys, same_prob_bins=same_prob_bins,
             num_turns=10, augment_removal_max=0, augment_removal_intensity=0,
@@ -182,14 +195,26 @@ def main():
     else:
         # Used for prebatched validation data
         if args.presampled_val_data_dir.endswith('hdf5'):
+            logging.info("Validation is using PrebatchedGenerator")
             validation_generator = PrebatchedGeneratorHDF5(
                 args.presampled_val_data_dir,
                 binned_spectrums_val,
-                spectrum_binner
+                spectrum_binner,
+                augment_removal_max=0, 
+                augment_removal_intensity=0,
+                augment_intensity=0, 
+                augment_noise_max=0,
+                use_fixed_set=True
             )
         elif args.presampled_val_data_dir.endswith('feather'):
+            logging.info("Validation is using PrebatchedGenerator")
             validation_generator = PrebatchedGenerator(
-                args.presampled_val_data_dir
+                args.presampled_val_data_dir,
+                augment_removal_max=0, 
+                augment_removal_intensity=0,
+                augment_intensity=0, 
+                augment_noise_max=0,
+                use_fixed_set=True
             )
         else:
             raise ValueError("Data format not recognized")
@@ -208,21 +233,33 @@ def main():
         model = SiameseModel(spectrum_binner,
                             base_dims=tuple(args.hidden_dims),
                             embedding_dim=int(args.embedding_dim),
-                            dropout_rate=0.2)
+                            dropout_rate=args.dropout_rate)
     elif args.use_cnn_model:
         model = CNNSiameseModel(spectrum_binner, embedding_dim=args.embedding_dim)
     else:
         raise ValueError("Model type not recognized")
     
-    model.compile(loss='mse',
-                optimizer=Adam(learning_rate=0.001),
+    if args.loss_bias_multiplier is not None:
+        loss = _biased_loss
+    else:
+        loss = 'mse'
+
+    model.compile(loss=loss,
+                optimizer=Adam(learning_rate=args.learning_rate),
                 metrics=["mae", tf.keras.metrics.RootMeanSquaredError()])
 
+    # Print loss function from model
+    logging.info("Model loss function:")
+    logging.info(model.model.loss)
+
     # Save best model and include earlystopping
+    callbacks = []
     earlystopper_scoring_net = EarlyStopping(monitor='val_loss', mode="min", patience=10, verbose=1, restore_best_weights=True)
+    if not args.no_early_stopping:
+        callbacks += [earlystopper_scoring_net]
 
     history = model.model.fit(training_generator, validation_data=validation_generator,
-                            epochs=150, verbose=1, callbacks=[earlystopper_scoring_net])
+                            epochs=args.epochs, verbose=1, callbacks=callbacks)
 
     # history = model.model.fit(training_generator, validation_data=validation_generator,
     #                         epochs=50, verbose=1) 
@@ -244,10 +281,28 @@ def main():
     plt.ylabel('loss')
     plt.xlabel('epoch')
     plt.legend(['train', 'val'], loc='upper left')
-    plt.savefig(os.path.join(args.save_dir, "loss.png"))
-    
+    plt.savefig(os.path.join(args.save_dir, f"model_{current_time}_history.png"))
+
     # Reset log level
     logging.getLogger().setLevel(log_level)
+
+def biased_loss(y_true, y_pred, multiplier=1.0):
+    """Biased loss reweights the errors by the ground truth values.
+    The goal of the biased loss function is to reduce error in the high pairwise similarity region.
+    
+    Parameters:
+    - y_true: The ground truth values.
+    - y_pred: The predicted values.
+    - multiplier: A multiplier to adjust the impact of the reweighted errors (default is 1.0).
+    
+    Returns:
+    The biased loss value.
+    """
+    weights = tf.math.multiply(y_true, multiplier) + 1.0
+    squared_difference = tf.square(y_true - y_pred)
+
+    weighted_squared_difference = tf.math.multiply(squared_difference, weights)
+    return tf.reduce_mean(weighted_squared_difference, axis=-1)
 
 if __name__ == "__main__":
     main()

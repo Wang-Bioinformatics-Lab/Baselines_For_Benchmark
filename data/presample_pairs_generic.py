@@ -37,6 +37,9 @@ def main():
                                                 help='The maximum difference between collision energies of two spectra to be considered\
                                                     a pair. Default is <= 5. "-1.0" means collision energies are not filtered. \
                                                     If no collision enegy is available for either spectra, both will be included. Only applys in memory efficent mode.')
+    parser.add_argument('--exponential_bins', help='Exponent for equal probability adjustment.', default=None, type=float)
+    parser.add_argument('--num_bins', help='Number of bins for equal probability adjustment.', default=10, type=int)
+    parser.add_argument('--strict_collision_energy', action='store_true', help="Require all pairs to have an associated collision energy.", default=False)
     # parser.add_argument('--no_pm_requirement', action='store_true', help='Do not require precursor mass difference to be less than 200. Only applys in memory efficent mode.', default=False)
 
     args = parser.parse_args()
@@ -85,8 +88,18 @@ def main():
     batch_size = int(args.batch_size)
     num_turns  = int(args.num_turns)
 
-    same_prob_bins = list(zip(np.linspace(0, 0.9, 10), np.linspace(0.1, 1, 10)))
+    if args.exponential_bins is not None:
+        all_bins = np.linspace(0, 1.0, args.num_bins+1)**args.exponential_bins # Will spend 30% of it's time in the top 20% of the bins
+        lower_bins = all_bins[:-1]
+        upper_bins = all_bins[1:]
+        same_prob_bins = list(zip(lower_bins, upper_bins))
+    else:
+        same_prob_bins = list(zip(np.linspace(0, 0.9, args.num_bins), np.linspace(0.1, 1, args.num_bins)))
     
+    if args.train_pairs_path is not None and not args.memory_efficent:
+        if args.strict_collision_energy:
+            raise ValueError("strict_collision_energy is only compatible with memory efficient mode.")
+
     if args.train_pairs_path is None:
         train_pairs = None
     elif args.train_pairs_path.endswith('feather'):
@@ -151,7 +164,8 @@ def main():
                                                         ignore_equal_pairs=True,
                                                         merge_on_lst=args.merge_on_lst,
                                                         mass_analyzer_lst=args.mass_analyzer_lst,
-                                                        collision_energy_thresh=args.collision_energy_thresh,)
+                                                        collision_energy_thresh=args.collision_energy_thresh,
+                                                        strict_collision_energy=args.strict_collision_energy)
                                                         
 
         else:

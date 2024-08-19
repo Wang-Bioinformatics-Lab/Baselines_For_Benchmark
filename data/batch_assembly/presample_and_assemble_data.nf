@@ -10,6 +10,9 @@ params.train_pairs_path = ''
 params.tanimoto_scores_path = ''
 params.batch_size = ''
 params.num_turns = ''
+params.num_bins = ''
+params.exponential_bins = ''
+params.strict_collision_energy = false
 
 params.save_dir = ''
 params.save_format = 'hdf5'
@@ -23,7 +26,7 @@ params.force_one_epoch = false
 
 params.memory_efficent = false
 
-split_size = 50     // How many epochs each worker has, num_epochs must be divisible by this numebr to avoid errors
+split_size = 10     // How many epochs each worker has, num_epochs must be divisible by this numebr to avoid errors
 
 // This process samples one epoch of data
 process sampleSeveralEpochs {
@@ -34,7 +37,7 @@ process sampleSeveralEpochs {
 
     // If not using an hdf5 pairs file, this is quite memory intensive, 
     // and you'll likely want to aggressively limit parallelism
-    maxForks 10 //5
+    maxForks 15 //5
 
     input:
     each epoch_num 
@@ -97,6 +100,21 @@ process sampleSeveralEpochs {
     else
         mass_analyzer_lst=''
     fi
+    if [ "$params.num_bins" != '' ]; then
+        num_bins='--num_bins $params.num_bins'
+    else
+        num_bins=''
+    fi
+    if [ "$params.exponential_bins" != '' ]; then
+        exponential_bins='--exponential_bins $params.exponential_bins'
+    else
+        exponential_bins=''
+    fi
+    if [ "$params.strict_collision_energy" = true ]; then
+        strict_collision_energy='--strict_collision_energy'
+    else
+        strict_collision_energy=''
+    fi
 
     # For validation, we'll want exactly one epoch
     if [ "$params.force_one_epoch" = true ]; then
@@ -125,6 +143,9 @@ process sampleSeveralEpochs {
                                                     \$low_io \
                                                     \$memory_efficent \
                                                     \$mass_analyzer_lst \
+                                                    \$exponential_bins \
+                                                    \$strict_collision_energy \
+                                                    \$num_bins \
                                                     --save_dir "./" \
                                                     --seed $epoch_num
     """

@@ -73,6 +73,10 @@ def build_pairs( main_inchikey,
                 valid_pairs = pairs_generator.get_spectrum_pair_with_inchikey(main_inchikey, inchikey_j,
                                                                               return_type='ids',
                                                                               return_all=True)
+                if valid_pairs == (None, None):
+                    # No valid pairs, skip
+                    continue
+
                 # Structure as dataframe
                 valid_pairs = pd.DataFrame(valid_pairs, columns=['spectrum_id_1', 'spectrum_id_2'])
                 # Use a set since it's significantly faster than querying the index
@@ -86,7 +90,7 @@ def build_pairs( main_inchikey,
                         continue
                 for spectrum_id_j in spectrum_id_list_j:
                     if valid_pairs is not None:
-                        if spectrum_id_j not in valid_pairs.loc[spectrum_id_i['spectrum_id_2']].values:
+                        if spectrum_id_j not in valid_pairs.loc[spectrum_id_i, ['spectrum_id_2']].values:
                             continue
                     # The only time this computation will cross below the main diagonal.
                     # (in terms of spectrum_ids) is when the inchikeys are the same.
@@ -331,7 +335,8 @@ def build_test_pairs_list(  test_summary_path:str,
                             filter=False,
                             temp_file_dir=None,
                             inital_index=0,
-                            skip_merge=False):
+                            skip_merge=False,
+                            strict_collision_energy=False):
 
     if not filter:
         if merge_on_lst is not None or mass_analyzer_lst is not None or collision_energy_thresh != 5.0:
@@ -424,7 +429,8 @@ def build_test_pairs_list(  test_summary_path:str,
                                                 ignore_equal_pairs=False,   # Will explicitly be handled in build_pairs
                                                 merge_on_lst=merge_on_lst,
                                                 mass_analyzer_lst=mass_analyzer_lst,
-                                                collision_energy_thresh=collision_energy_thresh,)
+                                                collision_energy_thresh=collision_energy_thresh,
+                                                strict_collision_energy=strict_collision_energy)
     else:
         pairs_generator = None
 
@@ -544,6 +550,8 @@ def main():
                                                     a pair. Default is <= 5. "-1.0" means collision energies are not filtered. \
                                                     If no collision enegy is available for either spectra, both will be included. \
                                                     Ignored if --filter is not set.')
+    parser.add_argument('--strict_collision_energy', action='store_true', help='Whether to strictly filter by collision energy. \
+                                                                                Unless set, pairs with NaN collision energy will be included.')
     args = parser.parse_args()
 
     metadata_path = Path(args.metadata_path)
@@ -576,7 +584,8 @@ def main():
                           filter=args.filter,
                           temp_file_dir=args.temp_file_dir,
                           inital_index=args.inital_index,
-                          skip_merge=args.skip_merge)
+                          skip_merge=args.skip_merge,
+                          strict_collision_energy=args.strict_collision_energy)
 
 
 

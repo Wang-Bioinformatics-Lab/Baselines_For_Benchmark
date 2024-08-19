@@ -8,15 +8,17 @@ PAIRS_PATH=$DATA_DIR"/pairs_test_filtered.feather"
 
 SIMILARITY_THRESHOLD="0.6"
 
-conda activate "$BIN_DIR/new_conda_env"
+# conda activate "$BIN_DIR/new_conda_env"
 
 echo "Running modified_cosine with a basic split and using pairs from the filtered dataset."
 echo "Pairs Path:" $PAIRS_PATH
 
 cd $BIN_DIR
 
+conda activate ../../shared/conda_env
+
 python3 eval.py --method 'modified_cosine' \
                 --data $DATA_DIR \
                 --split_type 'basic' \
                 --n_most_recent 1 \
-                --pairs_path $PAIRS_PATH
+                --test_pairs_path $PAIRS_PATH

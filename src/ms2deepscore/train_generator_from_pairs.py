@@ -257,7 +257,8 @@ class PrebatchedGeneratorHDF5(DataGeneratorBase):
 
     def on_epoch_end(self):
         """Updates indexes after each epoch"""
-        self.curr_epoch +=1
+        if not self.settings['use_fixed_set']:
+            self.curr_epoch +=1
 
     def _set_generator_parameters(self, **settings):
         """Set parameter for data generator. Use below listed defaults unless other

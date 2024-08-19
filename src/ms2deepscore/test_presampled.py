@@ -20,11 +20,11 @@ from ms2deepscore import SpectrumBinner
 from ms2deepscore.data_generators import DataGeneratorAllInchikeys
 from ms2deepscore.models import SiameseModel
 from ms2deepscore import MS2DeepScore
-from ms2deepscore.models import load_model
-
+from custom_model_loader import load_model  # Allows kwargs
 from ms2deepscore.vector_operations import cosine_similarity
 
 from tqdm import tqdm
+import dask
 from joblib import Parallel, delayed
 import tempfile
 
@@ -32,6 +32,8 @@ import dask.dataframe as dd
 import dask.array as da
 from dask.distributed import LocalCluster
 from time import time
+
+from train_presampled import biased_loss
 
 from dask.diagnostics import ProgressBar
 PBAR = ProgressBar()
@@ -160,9 +162,12 @@ def main():
     print("GPU is", "available" if tf.config.list_physical_devices('GPU') else "NOT AVAILABLE", flush=True)
     
     # Initalize dask cluster
-    cluster = LocalCluster(n_workers=4, threads_per_worker=2)
+    # cluster = LocalCluster(n_workers=4, threads_per_worker=2)
+    cluster = LocalCluster(n_workers=2, threads_per_worker=2)
     client = cluster.get_client()
     
+    def _biased_loss(y_true, y_pred):
+        return biased_loss(y_true, y_pred, multiplier=args.loss_bias_multiplier)
 
     n_most_recent = args.n_most_recent
     # List available models
@@ -184,7 +189,7 @@ def main():
     print("Testing the following models:", available_models[:n_most_recent], flush=True)
     for model_index, model_name in enumerate(available_models[:n_most_recent]):
         print(f"Loading model ({model_index+1}/{min(len(available_models), n_most_recent)}: {model_name.stem})...", flush=True)
-        model = load_model(model_name)
+        model = load_model(model_name, custom_objects={'_biased_loss': _biased_loss})
         print("\tDone.", flush=True)
 
         spectra_test = pickle.load(open(args.test_path, "rb"))
@@ -246,7 +251,8 @@ def main():
 
             # Save the dataframe to disk
             print("Saving Dataframe to Disk...", flush=True)
-            presampled_pairs.repartition(partition_size='100MB').to_parquet(dask_output_path)
+            with dask.config.set(num_workers=min(os.cpu_count()-4, 1)): # This is very low memory, but very slow, so let's give it a boost
+                presampled_pairs.repartition(partition_size='100MB').to_parquet(dask_output_path)
             print("\tDone.", flush=True)
         # Reload with the error column already computed
         presampled_pairs = dd.read_parquet(dask_output_path)
@@ -436,9 +442,9 @@ def main():
         train_test_similarity_bins = np.linspace(0.2, 1, 17)    # to match other figures
         pairwise_similarity_bins   = np.linspace(0.0, 1, 21)    # to match other figures
         print("Creating Pairwise & Train-Test Similarity Heatmap", flush=True)
-        pw_tt_metrics = pairwise_train_test_dependent_heatmap(presampled_pairs, pairwise_similarity_bins, train_test_similarity_bins)
+        pw_tt_metrics = pairwise_train_test_dependent_heatmap(presampled_pairs, pairwise_similarity_bins, train_test_similarity_bins, mode='mean')
         # print('pw_tt_metrics', pw_tt_metrics)
-        pw_tt_metric_path = os.path.join(metric_dir, "pairwise_train_test_metrics.pkl")
+        pw_tt_metric_path = os.path.join(metric_dir, "pairwise_train_test_metrics_mean.pkl")
         pickle.dump(pw_tt_metrics, open(pw_tt_metric_path, "wb"))
         # Set any -1 values to nan
         pw_tt_metrics['rmse_grid'] = np.where(pw_tt_metrics['rmse_grid'] == -1, np.nan, pw_tt_metrics['rmse_grid'])
@@ -454,7 +460,7 @@ def main():
         print('bounds.shape', bounds.shape)
         x_ticks = bounds[0,:,1,:]
         plt.xticks(range(x_ticks.shape[0]), [f"({x_ticks[i][0].item():.2f}-{x_ticks[i][1].item():.2f})" for i in range(x_ticks.shape[0])], rotation=90)
-        plt.xlim(0, bounds.shape[1])
+        plt.xlim(-0.5, bounds.shape[1]-0.5)
         y_ticks = bounds[:,0,0,:]
         plt.yticks(range(y_ticks.shape[0]), [f"({y_ticks[i][1].item():.2f}-{y_ticks[i][1].item():.2f})" for i in range(y_ticks.shape[0])])
         plt.savefig(os.path.join(metric_dir, 'pairwise_train_test_heatmap.png'), bbox_inches="tight")

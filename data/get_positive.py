@@ -18,6 +18,8 @@ def main():
         args.output_dir = args.input_dir + "_positive"
     print(f"Output directory: {args.output_dir}")    
     
+    print(args.input_dir + "/*mgf")
+
     for path in glob(args.input_dir + "/*mgf"):
         print("Processing file:", path)
         spectra = list(load_from_mgf(path))
