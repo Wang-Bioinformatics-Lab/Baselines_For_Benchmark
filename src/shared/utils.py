@@ -305,9 +305,9 @@ def fixed_tanimoto_train_test_similarity_dependent(prediction_df, train_test_sim
     return output_dict
 
 def pairwise_train_test_dependent_heatmap(prediction_df, pairwise_similarity_bins, train_test_similarity_bins, mode='max'):
-    count_grid = np.zeros((len(pairwise_similarity_bins)-1, len(pairwise_similarity_bins)-1))
-    rmse_grid = np.ones((len(pairwise_similarity_bins)-1, len(pairwise_similarity_bins)-1)) * -1
-    mae_grid = np.ones((len(pairwise_similarity_bins)-1, len(pairwise_similarity_bins)-1)) * -1
+    count_grid = np.zeros((len(pairwise_similarity_bins)-1, len(train_test_similarity_bins)-1))
+    rmse_grid = np.ones((len(pairwise_similarity_bins)-1, len(train_test_similarity_bins)-1)) * -1
+    mae_grid = np.ones((len(pairwise_similarity_bins)-1, len(train_test_similarity_bins)-1)) * -1
     bounds = []
     
     tasks = []
@@ -352,7 +352,7 @@ def pairwise_train_test_dependent_heatmap(prediction_df, pairwise_similarity_bin
 
     with ProgressBar(minimum=1.0):
         results = compute(*[task[2:] for task in tasks])    # First two elements aren't computed
-    
+
     # Reconstruct grids from results
     for idx, (pairwise_sim_index, train_test_sim_index, count_task, rmse_task, mae_task) in enumerate(tasks):
         count_grid[pairwise_sim_index, train_test_sim_index] = results[idx][0]

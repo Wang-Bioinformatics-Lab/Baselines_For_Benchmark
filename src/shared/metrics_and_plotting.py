@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import pickle
 import gc
 
-TT_SIM_BINS = np.linspace(0.,1.0, 13)
+TT_SIM_BINS = np.linspace(0.4,1.0, 13)
 PW_SIM_BINS = np.linspace(0.,1.0, 11)
 
 from utils import train_test_similarity_dependent_losses, \
@@ -36,7 +36,7 @@ plt.rcParams.update({
     "figure.dpi": 300,
     })
 
-GRID_FIG_SIZE = (10,10)
+GRID_FIG_SIZE = (10,7)
 
 def main():
     parser = argparse.ArgumentParser(description='Test MS2DeepScore on the original data')
@@ -46,7 +46,7 @@ def main():
     parser.add_argument("--n_jobs", type=int, help="Number of jobs to run in parallel", default=1)
     args = parser.parse_args()
 
-    prediction_path = Path(prediction_path)
+    prediction_path = Path(args.prediction_path)
 
     metric_dir = os.path.join(args.save_dir, args.save_dir_insert)
 
@@ -55,7 +55,7 @@ def main():
         os.makedirs(metric_dir, exist_ok=True)
 
     # Initialize Dask Cluster
-    cluster = LocalCluster(n_workers=int(n_jobs/2), threads_per_worker=2)
+    cluster = LocalCluster(n_workers=int(args.n_jobs/2), threads_per_worker=2)
     client = cluster.get_client()
 
     presampled_pairs = dd.read_parquet(prediction_path)
@@ -73,17 +73,17 @@ def main():
     print("Nan Count:", presampled_pairs['error'].isna().sum().compute())
 
     # Calculate ROC Curve
-    print("Creating ROC Curve", flush=True)
-    roc_metrics = roc_curve(presampled_pairs, np.linspace(0,1.0, 21))
-    roc_path = os.path.join(metric_dir, "roc_metrics.pkl")
-    pickle.dump(roc_metrics, open(roc_path, "wb"))
-    plt.figure(figsize=(6, 6))
-    plt.plot(roc_metrics["fpr"], roc_metrics["tpr"], "o-")
-    plt.plot([0, 1], [0, 1], 'k--')
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title("ROC Curve")
-    plt.grid(True)
+    # print("Creating ROC Curve", flush=True)
+    # roc_metrics = roc_curve(presampled_pairs, np.linspace(0,1.0, 21))
+    # roc_path = os.path.join(metric_dir, "roc_metrics.pkl")
+    # pickle.dump(roc_metrics, open(roc_path, "wb"))
+    # plt.figure(figsize=(6, 6))
+    # plt.plot(roc_metrics["fpr"], roc_metrics["tpr"], "o-")
+    # plt.plot([0, 1], [0, 1], 'k--')
+    # plt.xlabel("False Positive Rate")
+    # plt.ylabel("True Positive Rate")
+    # plt.title("ROC Curve")
+    # plt.grid(True)
 
     # Train-Test Similarity Dependent Losses Aggregated (rmse)
     print("Creating Train-Test Similarity Dependent Losses Aggregated Plot", flush=True)
@@ -92,18 +92,32 @@ def main():
     plt.bar(np.arange(len(similarity_dependent_metrics_mean["rmses"]),), similarity_dependent_metrics_mean["rmses"],)
     # Add labels on top of bars
     for i, v in enumerate(similarity_dependent_metrics_mean["rmses"]):
-        plt.text(i, v + 0.001, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
+        plt.text(i, v + 0.001, f"{v:.2f}", ha='center', va='bottom', fontsize=14)
     plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
     plt.xlabel("Mean(Max(Test-Train Stuctural Similarity))")
     plt.ylabel("RMSE")
-    plt.xticks(np.arange(len(similarity_dependent_metrics_mean["rmses"])), [f"{a:.2f} to < {b:.2f}" for (a, b) in similarity_dependent_metrics_mean["bounds"]], rotation='vertical')
+    plt.xticks(np.arange(len(TT_SIM_BINS[1:])), [f"{x:.1f}" for x in TT_SIM_BINS[1:]], rotation='vertical')
     plt.grid(True)
     plt.savefig(os.path.join(metric_dir, 'train_test_rmse_mean.png'))
     train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_mean.pkl")
     pickle.dump(similarity_dependent_metrics_mean, open(train_test_metric_path, "wb"))
+
+    # Train-Test Similarity Dependent Losses Aggregated (mae)
+    plt.figure(figsize=(12, 9))
+    plt.bar(np.arange(len(similarity_dependent_metrics_mean["maes"]),), similarity_dependent_metrics_mean["maes"],)
+    # Add labels on top of bars
+    for i, v in enumerate(similarity_dependent_metrics_mean["maes"]):
+        plt.text(i, v + 0.001, f"{v:.2f}", ha='center', va='bottom', fontsize=14)
+    plt.title(f'Train-Test Dependent MAE\nAverage MAE: {overall_mae:.2f}')
+    plt.xlabel("Mean(Max(Test-Train Stuctural Similarity))")
+    plt.ylabel("MAE")
+    plt.xticks(np.arange(len(TT_SIM_BINS[1:])), [f"{x:.1f}" for x in TT_SIM_BINS[1:]], rotation='vertical')
+    plt.grid(True)
+    plt.savefig(os.path.join(metric_dir, 'train_test_mae_mean.png'))
+    train_test_metric_path = os.path.join(metric_dir, "train_test_metrics_mean.pkl")
+    pickle.dump(similarity_dependent_metrics_mean, open(train_test_metric_path, "wb"))
     del similarity_dependent_metrics_mean
     gc.collect()
-    
     
     # Tanimoto Dependent Losses Plot (RMSE)
     print("Computing Tanimoto Dependent Losses...", flush=True)
@@ -122,7 +136,7 @@ def main():
     pickle.dump(metric_dict, open(metric_path, "wb"))
 
     print("Creating Tanimoto Dependent Losses Plot", flush=True)
-    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(6, 8))
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(6, 6))
     
     ax1.plot(np.arange(len(metric_dict["rmses"])), metric_dict["rmses"], "o:", color="crimson")
     ax1.set_ylabel("RMSE")
@@ -135,7 +149,7 @@ def main():
     ax2.set_ylabel("# of spectrum pairs")
     ax2.set_xlabel("Tanimoto score bin")
     plt.yscale('log')
-    plt.xticks(np.arange(len(PW_SIM_BINS)), [f"{x:.1f}" for x in PW_SIM_BINS], rotation='vertical')
+    plt.xticks(np.arange(len(PW_SIM_BINS[1:])), [f"{x:.1f}" for x in PW_SIM_BINS[1:]], rotation='vertical')
     ax2.grid(True)
     
     # Save figure
@@ -143,7 +157,7 @@ def main():
     plt.savefig(fig_path)
 
     # Tanimoto Dependent Losses Plot (MAE)
-    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(6, 8))
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(6, 6))
 
     ax1.plot(np.arange(len(metric_dict["maes"])), metric_dict["maes"], "o:", color="crimson")
     ax1.set_ylabel("MAE")
@@ -156,7 +170,7 @@ def main():
     ax2.set_ylabel("# of spectrum pairs")
     ax2.set_xlabel("Tanimoto score bin")
     plt.yscale('log')
-    plt.xticks(np.arange(len(PW_SIM_BINS)), [f"{x:.1f}" for x in PW_SIM_BINS], rotation='vertical')
+    plt.xticks(np.arange(len(PW_SIM_BINS[1:])), [f"{x:.1f}" for x in PW_SIM_BINS[1:]], rotation='vertical')
     ax2.grid(True)
 
     fig_path = os.path.join(metric_dir, "mae_metrics.png")
@@ -168,7 +182,7 @@ def main():
     ax.set_ylabel("RMSE")
     ax.set_xlabel("Tanimoto score bin")
     ax.grid(True)
-    plt.xticks(np.arange(len(PW_SIM_BINS)), [f"{x:.1f}" for x in PW_SIM_BINS], rotation='vertical')
+    plt.xticks(np.arange(len(PW_SIM_BINS[1:])), [f"{x:.1f}" for x in PW_SIM_BINS[1:]], rotation='vertical')
     fig_path = os.path.join(metric_dir, "rmse_metrics_no_counts.png")
     plt.savefig(fig_path)
 
@@ -177,7 +191,7 @@ def main():
     ax.set_ylabel("MAE")
     ax.set_xlabel("Tanimoto score bin")
     ax.grid(True)
-    plt.xticks(np.arange(len(PW_SIM_BINS)), [f"{x:.1f}" for x in PW_SIM_BINS], rotation='vertical')
+    plt.xticks(np.arange(len(PW_SIM_BINS[1:])), [f"{x:.1f}" for x in PW_SIM_BINS[1:]], rotation='vertical')
     fig_path = os.path.join(metric_dir, "mae_metrics_no_counts.png")
     plt.savefig(fig_path)
 
@@ -196,13 +210,8 @@ def main():
     plt.title('Pairwise & Train-Test Dependent RMSE')
     plt.ylabel('Pairwise Structural Similarity')
     plt.xlabel('Max Test-Train Structural Similarity')
-    bounds = np.array(pw_tt_metrics['bounds'])
-    print('bounds.shape', bounds.shape)
-    x_ticks = bounds[0,:,1,:]
-    plt.xticks(range(x_ticks.shape[0]), [f"({x_ticks[i][0].item():.2f}-{x_ticks[i][1].item():.2f})" for i in range(x_ticks.shape[0])], rotation=90)
-    plt.xlim(-0.5, bounds.shape[1]-0.5)
-    y_ticks = bounds[:,0,0,:]
-    plt.yticks(range(y_ticks.shape[0]), [f"({y_ticks[i][1].item():.2f}-{y_ticks[i][1].item():.2f})" for i in range(y_ticks.shape[0])])
+    plt.xticks(np.arange(len(TT_SIM_BINS))-0.5, [f"{x:.2f}" for x in TT_SIM_BINS], rotation=90)
+    plt.yticks(np.arange(len(PW_SIM_BINS))-0.5, [f"{x:.1f}" for x in PW_SIM_BINS])
     plt.savefig(os.path.join(metric_dir, 'pairwise_train_test_heatmap_rmse.png'), bbox_inches="tight")
 
     # Pairwise Similarity, Train-Test Distance Heatmap (MAE)
@@ -214,11 +223,8 @@ def main():
     plt.title('Pairwise & Train-Test Dependent MAE')
     plt.ylabel('Pairwise Structural Similarity')
     plt.xlabel('Max Test-Train Structural Similarity')
-    x_ticks = bounds[0,:,1,:]
-    plt.xticks(range(x_ticks.shape[0]), [f"({x_ticks[i][0].item():.2f}-{x_ticks[i][1].item():.2f})" for i in range(x_ticks.shape[0])], rotation=90)
-    plt.xlim(-0.5, bounds.shape[1]-0.5)
-    y_ticks = bounds[:,0,0,:]
-    plt.yticks(range(y_ticks.shape[0]), [f"({y_ticks[i][0].item():.2f}-{y_ticks[i][1].item():.2f})" for i in range(y_ticks.shape[0])])
+    plt.xticks(np.arange(len(TT_SIM_BINS))-0.5, [f"{x:.2f}" for x in TT_SIM_BINS], rotation=90)
+    plt.yticks(np.arange(len(PW_SIM_BINS))-0.5, [f"{x:.1f}" for x in PW_SIM_BINS])
     plt.savefig(os.path.join(metric_dir, 'pairwise_train_test_heatmap_mae.png'), bbox_inches="tight")
 
     # Pairwise Similarity, Train-Test Distance Heatmap (Counts)
@@ -231,11 +237,8 @@ def main():
     plt.title('Pairwise & Train-Test Dependent Counts')
     plt.ylabel('Pairwise Structural Similarity')
     plt.xlabel('Max Test-Train Structural Similarity')
-    x_ticks = bounds[0,:,1,:]
-    plt.xticks(range(x_ticks.shape[0]), [f"({x_ticks[i][0].item():.2f}-{x_ticks[i][1].item():.2f})" for i in range(x_ticks.shape[0])], rotation=90)
-    plt.xlim(0, bounds.shape[1])
-    y_ticks = bounds[:,0,0,:]
-    plt.yticks(range(y_ticks.shape[0]), [f"({y_ticks[i][0].item():.2f}-{y_ticks[i][1].item():.2f})" for i in range(y_ticks.shape[0])])
+    plt.xticks(np.arange(len(TT_SIM_BINS))-0.5, [f"{x:.2f}" for x in TT_SIM_BINS], rotation=90)
+    plt.yticks(np.arange(len(PW_SIM_BINS))-0.5, [f"{x:.1f}" for x in PW_SIM_BINS])
     plt.savefig(os.path.join(metric_dir, 'pairwise_train_test_heatmap_counts.png'), bbox_inches="tight")
 
 if __name__ == "__main__":
