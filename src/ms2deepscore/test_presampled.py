@@ -152,8 +152,10 @@ def main():
     
     # Initalize dask cluster
     # cluster = LocalCluster(n_workers=4, threads_per_worker=2)
-    cluster = LocalCluster(n_workers=2, threads_per_worker=2)
+    cluster = LocalCluster(n_workers=int(args.n_jobs/2), threads_per_worker=2)
     client = cluster.get_client()
+    # Print out the dashboard link
+    print(f"Dask Dashboard: {client.dashboard_link}")
     
     def _biased_loss(y_true, y_pred):
         return biased_loss(y_true, y_pred, multiplier=args.loss_bias_multiplier)

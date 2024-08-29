@@ -12,6 +12,10 @@ from tqdm import tqdm
 def roc_curve(prediction_df:dask.dataframe, threshold_lst:str):
     # Reduce dataframe selection to pairs with < 10 ppm
     prediction_df = prediction_df.loc[prediction_df['precursor_ppm_diff'] < 10]
+    # Remove predictions with identical spectrum_ids
+    prediction_df = prediction_df.loc[prediction_df['spectrumid1'] != prediction_df['spectrumid2']]
+    # Remove failed predictions
+    prediction_df = prediction_df.loc[prediction_df['predicted_similarity'] != -1]
 
     prediction_df['positive'] = prediction_df['inchikey1'] == prediction_df['inchikey2']
 
@@ -21,10 +25,10 @@ def roc_curve(prediction_df:dask.dataframe, threshold_lst:str):
     fn_lst = []
 
     for threshold in threshold_lst:
-        tp = delayed(sum)(prediction_df.loc[prediction_df['score'] >= threshold]['positive'])
-        fp = delayed(sum)(prediction_df.loc[prediction_df['score'] >= threshold]['positive'] == False)
-        tn = delayed(sum)(prediction_df.loc[prediction_df['score'] < threshold]['positive'] == False)
-        fn = delayed(sum)(prediction_df.loc[prediction_df['score'] < threshold]['positive'])
+        tp = delayed(sum)(prediction_df.loc[prediction_df['predicted_similarity'] >= threshold]['positive'])
+        fp = delayed(sum)(prediction_df.loc[prediction_df['predicted_similarity'] >= threshold]['positive'] == False)
+        tn = delayed(sum)(prediction_df.loc[prediction_df['predicted_similarity'] < threshold]['positive'] == False)
+        fn = delayed(sum)(prediction_df.loc[prediction_df['predicted_similarity'] < threshold]['positive'])
 
         tp_lst.append(tp)
         fp_lst.append(fp)
@@ -37,12 +41,17 @@ def roc_curve(prediction_df:dask.dataframe, threshold_lst:str):
     fpr = [fp/(fp + tn) for fp, tn in zip(fp_lst, tn_lst)]
     tpr = [tp/(tp + fn) for tp, fn in zip(tp_lst, fn_lst)]
 
+    auc = np.trapz(tpr, fpr)
+    print(fpr)
+    print(tpr)
+
     return {'tp': tp_lst,
             'fp': fp_lst,
             'tn': tn_lst,
             'fn': fn_lst,
             'fpr': fpr,
             'tpr':tpr,
+            'auc': auc,
             'thresholds': threshold_lst}
 
 def get_structural_similarity_matrix(a, a_labels, b=None, b_labels=None, fp_type='', similarity_measure="jaccard"):
