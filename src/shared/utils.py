@@ -9,6 +9,42 @@ import dask
 import os
 from tqdm import tqdm
 
+def roc_curve(prediction_df:dask.dataframe, threshold_lst:str):
+    # Reduce dataframe selection to pairs with < 10 ppm
+    prediction_df = prediction_df.loc[prediction_df['precursor_ppm_diff'] < 10]
+
+    prediction_df['positive'] = prediction_df['inchikey1'] == prediction_df['inchikey2']
+
+    tp_lst = []
+    fp_lst = []
+    tn_lst = []
+    fn_lst = []
+
+    for threshold in threshold_lst:
+        tp = delayed(sum)(prediction_df.loc[prediction_df['score'] >= threshold]['positive'])
+        fp = delayed(sum)(prediction_df.loc[prediction_df['score'] >= threshold]['positive'] == False)
+        tn = delayed(sum)(prediction_df.loc[prediction_df['score'] < threshold]['positive'] == False)
+        fn = delayed(sum)(prediction_df.loc[prediction_df['score'] < threshold]['positive'])
+
+        tp_lst.append(tp)
+        fp_lst.append(fp)
+        tn_lst.append(tn)
+        fn_lst.append(fn)
+
+    with ProgressBar(minimum=1.0):
+        tp_lst, fp_lst, tn_lst, fn_lst = compute(tp_lst, fp_lst, tn_lst, fn_lst)
+
+    fpr = [fp/(fp + tn) for fp, tn in zip(fp_lst, tn_lst)]
+    tpr = [tp/(tp + fn) for tp, fn in zip(tp_lst, fn_lst)]
+
+    return {'tp': tp_lst,
+            'fp': fp_lst,
+            'tn': tn_lst,
+            'fn': fn_lst,
+            'fpr': fpr,
+            'tpr':tpr,
+            'thresholds': threshold_lst}
+
 def get_structural_similarity_matrix(a, a_labels, b=None, b_labels=None, fp_type='', similarity_measure="jaccard"):
     if b is None or b_labels is None:
         assert b is None and b_labels is None
