@@ -43,6 +43,7 @@ def main():
     parser.add_argument("--prediction_path", type=str, help="Path to parquet file containing predictions")
     parser.add_argument("--save_dir", type=str, help="Path to save the output")
     parser.add_argument("--save_dir_insert", type=str, help="Appended to save dir, to help organize test sets if needed", default="")
+    parser.add_argument("--n_jobs", type=int, help="Number of jobs to run in parallel", default=1)
     args = parser.parse_args()
 
     prediction_path = Path(prediction_path)
@@ -54,7 +55,7 @@ def main():
         os.makedirs(metric_dir, exist_ok=True)
 
     # Initialize Dask Cluster
-    cluster = LocalCluster(n_workers=2, threads_per_worker=2)
+    cluster = LocalCluster(n_workers=int(n_jobs/2), threads_per_worker=2)
     client = cluster.get_client()
 
     presampled_pairs = dd.read_parquet(prediction_path)
@@ -236,3 +237,6 @@ def main():
     y_ticks = bounds[:,0,0,:]
     plt.yticks(range(y_ticks.shape[0]), [f"({y_ticks[i][0].item():.2f}-{y_ticks[i][1].item():.2f})" for i in range(y_ticks.shape[0])])
     plt.savefig(os.path.join(metric_dir, 'pairwise_train_test_heatmap_counts.png'), bbox_inches="tight")
+
+if __name__ == "__main__":
+    main()
