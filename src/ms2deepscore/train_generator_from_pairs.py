@@ -249,6 +249,12 @@ class PrebatchedGeneratorHDF5(DataGeneratorBase):
 
         output = []
         for _, row in batch.iterrows():
+            if row['spectrumid1'] not in self.spec_dict:            
+                # print(f"Failed to find spectrum with id {row['spectrumid1']}")
+                continue
+            if row['spectrumid2'] not in self.spec_dict:
+                # print(f"Failed to find spectrum with id {row['spectrumid2']}")
+                continue
             spectrum1 = self.spec_dict[row['spectrumid1']]
             spectrum2 = self.spec_dict[row['spectrumid2']]
             output.append((spectrum1, spectrum2, row['score']))
