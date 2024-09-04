@@ -130,9 +130,9 @@ def main():
     # Get Top K Tanimoto Similarities (including identical inchikeys)
     print("Creating Top K Tanimoto Score Analysis Including Identical InChIKeys", flush=True)
     top_scores = get_top_k_scores(presampled_pairs, k=10)
-    print("top_scores_averages:", top_scores['top_scores_averages'])
-    print("max_scores_averages:", top_scores['max_scores_averages'])
-    print("difference_averages:", top_scores['difference_averages'])
+    print("top_scores_averages:", [f"{x:.4f}" for x in top_scores['top_scores_averages']])
+    print("max_scores_averages:", [f"{x:.4f}" for x in top_scores['max_scores_averages']])
+    print("difference_averages:", [f"{x:.4f}" for x in top_scores['difference_averages']])
     # Save the top scores
     top_scores_path = os.path.join(metric_dir, "top_k_scores.pkl")
     pickle.dump(top_scores, open(top_scores_path, "wb"))
@@ -145,9 +145,9 @@ def main():
 
     print("Calculating Top K Tanimoto Scores (excluding identical inchikeys)", flush=True)
     top_scores_no_identical = get_top_k_scores(presampled_pairs, k=10, remove_identical_inchikeys=True)
-    print("top_scores_averages:", top_scores_no_identical['top_scores_averages'])
-    print("max_scores_averages:", top_scores_no_identical['max_scores_averages'])
-    print("difference_averages:", top_scores_no_identical['difference_averages'])
+    print("top_scores_averages:", [f"{x:.4f}" for x in top_scores_no_identical['top_scores_averages']])
+    print("max_scores_averages:", [f"{x:.4f}" for x in top_scores_no_identical['max_scores_averages']])
+    print("difference_averages:", [f"{x:.4f}" for x in top_scores_no_identical['difference_averages']])
     # Save the top scores
     top_scores_path = os.path.join(metric_dir, "top_k_scores_no_identical.pkl")
     pickle.dump(top_scores_no_identical, open(top_scores_path, "wb"))
