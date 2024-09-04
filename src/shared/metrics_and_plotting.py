@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pickle
 import gc
+import seaborn as sns
 
 TT_SIM_BINS = np.linspace(0.4,1.0, 13)
 PW_SIM_BINS = np.linspace(0.,1.0, 11)
@@ -20,7 +21,9 @@ from utils import train_test_similarity_dependent_losses, \
                     train_test_similarity_bar_plot, \
                     fixed_tanimoto_train_test_similarity_dependent, \
                     pairwise_train_test_dependent_heatmap, \
-                    roc_curve
+                    roc_curve, \
+                    top_k_analysis, \
+                    get_top_k_scores
 
 plt.rcParams.update({
     "text.usetex": False,
@@ -36,7 +39,57 @@ plt.rcParams.update({
     "figure.dpi": 300,
     })
 
+plt.style.use('seaborn-v0_8-deep')
+
 GRID_FIG_SIZE = (10,7)
+
+def top_k_similarities_line_plot(top_scores,):
+    # Line plot of the top score and max score
+    fig = plt.figure(figsize=(6, 6))
+    # Concatenate the top scores and max scores into a single array
+    top_scores_array = np.stack(list(top_scores['top_k_scores'].values()))
+    max_scores_array = np.stack(list(top_scores['max_scores'].values()))
+    # Average 
+    top_scores_mean = np.nanmean(top_scores_array, axis=0)
+    max_scores_mean = np.nanmean(max_scores_array, axis=0)
+    # Standard Deviation
+    # top_scores_std = np.nanstd(top_scores_array, axis=0)
+    # max_scores_std = np.nanstd(max_scores_array, axis=0)
+    # Line Plot with Error Bars
+    # plt.errorbar(np.arange(len(top_scores_mean)), top_scores_mean, yerr=top_scores_std, label="Top 10 Predictions")
+    # plt.errorbar(np.arange(len(max_scores_mean)), max_scores_mean, yerr=max_scores_std, label="Theoretical Max")
+    # Regular line plot
+    plt.plot(np.arange(len(top_scores_mean)), top_scores_mean, label="Top 10 Predictions")
+    plt.plot(np.arange(len(max_scores_mean)), max_scores_mean, label="Theoretical Max")
+    plt.ylim(-0.1, 1.1)
+    plt.xlabel("Rank")
+    plt.ylabel("Tanimoto Score")
+    plt.title("Top 10 Tanimoto Scores")
+    plt.legend()
+    return fig
+
+def top_k_similarities_violin_plot(top_scores):
+    data = []
+    ranks = np.arange(len(next(iter(top_scores['top_k_scores'].values()))))
+    top_scores_array = np.stack(list(top_scores['top_k_scores'].values()))
+    max_scores_array = np.stack(list(top_scores['max_scores'].values()))
+    for i, rank in enumerate(ranks):
+        for score in top_scores_array[:, i]:
+            data.append({'Rank': rank, 'Score': score, 'Type': 'Top 10 Predictions'})
+        for score in max_scores_array[:, i]:
+            data.append({'Rank': rank, 'Score': score, 'Type': 'Theoretical Max'})
+
+    df = pd.DataFrame(data)
+
+    # Create the violin plot
+    fig = plt.figure(figsize=(12, 6))
+    sns.violinplot(x='Rank', y='Score', hue='Type', data=df, split=True, inner="quartile")
+    plt.xlabel("Rank")
+    plt.ylabel("Tanimoto Score")
+    plt.ylim(0, 1)
+    plt.title("Top 10 Tanimoto Scores vs Theoretical Max")
+    plt.legend(title="Score Type", bbox_to_anchor=(1.05, 1), loc='upper left')
+    return fig
 
 def main():
     parser = argparse.ArgumentParser(description='Test MS2DeepScore on the original data')
@@ -68,9 +121,69 @@ def main():
     print("Overall MAE (from evaluate()):", overall_mae)
 
     # Nan Safe
-    print("Overall NAN RMSE (from evaluate()):", da.sqrt(da.nanmean(da.square(presampled_pairs['error'].values))).compute())
-    print("Overall NAN MAE (from evaluate()):", da.nanmean(da.abs(presampled_pairs['error'])).compute())
+    overall_nan_rmse = da.sqrt(da.nanmean(da.square(presampled_pairs['error'].values))).compute()
+    overall_nan_mae = da.nanmean(da.abs(presampled_pairs['error'])).compute()
+    print("Overall NAN RMSE (from evaluate()):", overall_nan_rmse)
+    print("Overall NAN MAE (from evaluate()):", overall_nan_mae)
     print("Nan Count:", presampled_pairs['error'].isna().sum().compute())
+
+    # Get Top K Tanimoto Similarities (including identical inchikeys)
+    print("Creating Top K Tanimoto Score Analysis Including Identical InChIKeys", flush=True)
+    top_scores = get_top_k_scores(presampled_pairs, k=10)
+    print("top_scores_averages:", top_scores['top_scores_averages'])
+    print("max_scores_averages:", top_scores['max_scores_averages'])
+    print("difference_averages:", top_scores['difference_averages'])
+    # Save the top scores
+    top_scores_path = os.path.join(metric_dir, "top_k_scores.pkl")
+    pickle.dump(top_scores, open(top_scores_path, "wb"))
+    # Line Plot
+    fig = top_k_similarities_line_plot(top_scores)
+    fig.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_line.png'))
+    # Violin Plot
+    fig = top_k_similarities_violin_plot(top_scores)
+    fig.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_violin.png'))
+
+    print("Calculating Top K Tanimoto Scores (excluding identical inchikeys)", flush=True)
+    top_scores_no_identical = get_top_k_scores(presampled_pairs, k=10, remove_identical_inchikeys=True)
+    print("top_scores_averages:", top_scores_no_identical['top_scores_averages'])
+    print("max_scores_averages:", top_scores_no_identical['max_scores_averages'])
+    print("difference_averages:", top_scores_no_identical['difference_averages'])
+    # Save the top scores
+    top_scores_path = os.path.join(metric_dir, "top_k_scores_no_identical.pkl")
+    pickle.dump(top_scores_no_identical, open(top_scores_path, "wb"))
+    # Line Plot
+    fig = top_k_similarities_line_plot(top_scores_no_identical)
+    fig.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_no_identical_line.png'))
+    # Violin Plot
+    fig = top_k_similarities_violin_plot(top_scores_no_identical)
+    fig.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_no_identical_violin.png'))
+
+    # Calculate Top k Analysis
+    print("Creating Top k Analysis", flush=True)
+    top_1_metrics = top_k_analysis(presampled_pairs, remove_identical_inchikeys=True)
+    top_1_metrics_w_identical = top_k_analysis(presampled_pairs, remove_identical_inchikeys=False)
+    # Each dict contains 'mean_top_rank' and 'std_top_rank'
+    top_1_path = os.path.join(metric_dir, "top_1_metrics.pkl")
+    pickle.dump(top_1_metrics, open(top_1_path, "wb"))
+    top_1_path = os.path.join(metric_dir, "top_1_metrics_w_identical.pkl")
+    pickle.dump(top_1_metrics_w_identical, open(top_1_path, "wb"))
+
+    # Bar chart with error bars comparing the two
+    plt.figure(figsize=(6, 6))
+    plt.bar([0, 1], [top_1_metrics['mean_top_rank'], top_1_metrics_w_identical['mean_top_rank']], yerr=[top_1_metrics['std_top_rank'], top_1_metrics_w_identical['std_top_rank']])
+    plt.xticks([0, 1], ['Non-Identical InChI', 'Identical InChI'])
+    plt.ylabel("Mean Top Rank")
+    plt.title("Predicted Rank of Highest Similarity\nStructure")
+    plt.savefig(os.path.join(metric_dir, 'top_1_analysis.png'))
+
+    # Violin Plot of Top k Analysis
+    plt.figure(figsize=(6, 6))
+    plt.violinplot([list(top_1_metrics['all_ranks'].values()), list(top_1_metrics_w_identical['all_ranks'].values())],
+                   showmedians=True,)
+    plt.xticks([1, 2], ['Non-Identical InChI', 'Identical InChI'])
+    plt.ylabel("Top Rank")
+    plt.title("Predicted Rank of Highest Similarity\nStructure")
+    plt.savefig(os.path.join(metric_dir, 'top_1_analysis_violin.png'))
 
     # Calculate ROC Curve
     print("Creating ROC Curve", flush=True)
@@ -93,7 +206,7 @@ def main():
     # Add labels on top of bars
     for i, v in enumerate(similarity_dependent_metrics_mean["rmses"]):
         plt.text(i, v + 0.001, f"{v:.2f}", ha='center', va='bottom', fontsize=14)
-    plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_rmse:.2f}')
+    plt.title(f'Train-Test Dependent RMSE\nAverage RMSE: {overall_nan_rmse:.2f}')
     plt.xlabel("Mean(Max(Test-Train Stuctural Similarity))")
     plt.ylabel("RMSE")
     plt.xticks(np.arange(len(TT_SIM_BINS[1:])), [f"{x:.1f}" for x in TT_SIM_BINS[1:]], rotation='vertical')
@@ -108,7 +221,7 @@ def main():
     # Add labels on top of bars
     for i, v in enumerate(similarity_dependent_metrics_mean["maes"]):
         plt.text(i, v + 0.001, f"{v:.2f}", ha='center', va='bottom', fontsize=14)
-    plt.title(f'Train-Test Dependent MAE\nAverage MAE: {overall_mae:.2f}')
+    plt.title(f'Train-Test Dependent MAE\nAverage MAE: {overall_nan_mae:.2f}')
     plt.xlabel("Mean(Max(Test-Train Stuctural Similarity))")
     plt.ylabel("MAE")
     plt.xticks(np.arange(len(TT_SIM_BINS[1:])), [f"{x:.1f}" for x in TT_SIM_BINS[1:]], rotation='vertical')
@@ -131,6 +244,8 @@ def main():
     metric_dict["maes"]             = tanimoto_dependent_dict["maes"]
     metric_dict["rmse"] = overall_rmse
     metric_dict["mae"]  = overall_mae
+    metric_dict["nan_rmse"] = overall_nan_rmse
+    metric_dict["nan_mae"]  = overall_nan_mae
 
     metric_path = os.path.join(metric_dir, "metrics.pkl")
     pickle.dump(metric_dict, open(metric_path, "wb"))
