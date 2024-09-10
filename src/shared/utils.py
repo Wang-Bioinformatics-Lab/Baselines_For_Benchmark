@@ -122,8 +122,12 @@ def get_top_k_scores(prediction_df:dask.dataframe, k=1, remove_identical_inchike
     # Get top-k ground truth scores within groups
     max_scores = grouped.apply(calculate_max_score, meta=('max_scores', 'f8'))
 
-    top_k_scores = top_k_scores.compute().to_dict()
-    max_scores = max_scores.compute().to_dict()
+    # Compute both top_k_scores and max_scores in a single compute call
+    top_k_scores, max_scores = dask.compute(top_k_scores, max_scores)
+
+    # Convert the results to dictionaries
+    top_k_scores = top_k_scores.to_dict()
+    max_scores = max_scores.to_dict()
 
     keys = list(top_k_scores.keys())
     
@@ -141,33 +145,26 @@ def get_top_k_scores(prediction_df:dask.dataframe, k=1, remove_identical_inchike
     return {'top_k_scores': top_k_scores, 'max_scores': max_scores, 'difference_dict': difference_dict, 
             'top_scores_averages': top_scores_averages, 'max_scores_averages': max_scores_averages, 'difference_averages': difference_averages}
 
-def top_k_analysis(prediction_df:dask.dataframe, k=1, remove_identical_inchikeys:bool=False)->dict:
-    """Get the rank of the the most similar structure in the prediction_df for each spectrum.
+def top_k_analysis(prediction_df: dd.DataFrame, k_list=[1], remove_identical_inchikeys: bool = False) -> dict:
+    """Get the rank of the most similar structure in the prediction_df for each spectrum.
     Optionally, excludes pairs with identical inchikeys simulating an analogue search setting.
     Always excludes pairs with identical spectrum ids.
-
-    This function assumes that test pairs are asymetric and does not check.
-
-    Some caveats: we use n_largest which means for multiple inchikeys equidistant from a query, you
-    could get more than k inchikeys. Additionally, we take the top k ranks, therefore all of the top-k 
-    ranks could correspond to the same InChiKey. As a result, this metric should be viewed as a lower bound on 
-    the performance of the model.
 
     Parameters
     ----------
     prediction_df : dask.dataframe
         DataFrame containing the predictions and ground truth similarities.
-    k : int, optional
-        The ranks to consider, by default 1
+    k_list : list, optional
+        List of k values to consider, by default [1]
     remove_identical_inchikeys : bool, optional
         If True, exclude pairs with identical inchikeys, by default False
 
     Returns
     -------
     dict
-        Dictionary containing the rank of the most similar structure for each spectrum.
+        Dictionary containing the mean and standard deviation of ranks for each value of k.
     """
-
+    
     prediction_df = prediction_df.loc[prediction_df['spectrumid1'] != prediction_df['spectrumid2']]
 
     if remove_identical_inchikeys:
@@ -175,7 +172,7 @@ def top_k_analysis(prediction_df:dask.dataframe, k=1, remove_identical_inchikeys
 
     # Make symmetric
     reversed_df = prediction_df.rename(columns={'spectrumid1': 'spectrumid2', 'spectrumid2': 'spectrumid1',
-                                            'inchikey1': 'inchikey2', 'inchikey2': 'inchikey1'})
+                                                'inchikey1': 'inchikey2', 'inchikey2': 'inchikey1'})
     prediction_df = dd.concat([prediction_df, reversed_df], axis=0)
 
     # Sort by predicted similarity in descending order
@@ -187,26 +184,36 @@ def top_k_analysis(prediction_df:dask.dataframe, k=1, remove_identical_inchikeys
     # Get ranks within groups
     prediction_df['rank'] = grouped.cumcount() + 1
 
-    # For each group, get the max value of 'ground_truth_similarity' and get the lowest (best) 'predicted_similarity' rank for that value
-    def calculate_rank(df):
-        # keep='all' to get all ties
-        most_similar_inchikeys_with_ties = df.drop_duplicates(subset=['inchikey2']).set_index('inchikey2')['ground_truth_similarity'].nlargest(k, keep='all')
-
+    # Function to calculate normalized rank
+    def calculate_rank(df, _k):
+        most_similar_inchikeys_with_ties = df.drop_duplicates(subset=['inchikey2']).set_index('inchikey2')['ground_truth_similarity'].nlargest(_k, keep='all')
         max_gt_rows = df[df['inchikey2'].isin(most_similar_inchikeys_with_ties.index)]
-        min_ranks_for_max_gt = max_gt_rows['rank'].nsmallest(k, keep='first')   # Rank is unique anyways
-        # Subtract expected value of mean(1...rank) from average rank to get normalized rank
-        normalized_rank =   min_ranks_for_max_gt.mean() - np.mean(np.arange(1,k+1))
+        max_gt_rows = max_gt_rows.nsmallest(_k, keep='first', columns='rank')
+        min_ranks_for_max_gt = max_gt_rows['rank'].values
+        max_ranks = min(_k, len(max_gt_rows.ground_truth_similarity.unique()))
+        # min(_k,max_ranks) is used because on filtered data, it is possible that there are less than k rows
+        normalized_rank = min_ranks_for_max_gt.mean() - np.mean(np.arange(1, min(_k,max_ranks) + 1))
 
         return normalized_rank
 
-    # Apply the ranking function to each group
-    ranks = grouped.apply(calculate_rank, meta=('rank', 'f8'))
+    results = {}
+    ranks_dict = {}
 
-    # Compute mean and standard deviation of the ranks
-    mean_top_rank = ranks.mean().compute()
-    std_top_rank = ranks.std().compute()
+    for k in k_list:
+        ranks = grouped.apply(calculate_rank, k, meta=('rank', 'f8'))
+        ranks_dict[k] = ranks
 
-    return {'mean_top_rank': mean_top_rank, 'std_top_rank': std_top_rank, 'all_ranks': ranks.compute().to_dict()}
+    # Compute mean and standard deviation for each k in one go
+    means_and_stds = dd.compute({k: (r.mean(), np.median(r), r.std(), r) for k, r in ranks_dict.items()})[0]
+
+    for k, (mean, median, std, ranks) in means_and_stds.items():
+        results[k] = {}
+        results[k]['median_top_rank'] = median
+        results[k]['mean_top_rank'] = mean
+        results[k]['std_top_rank'] = std
+        results[k]['all_ranks'] = ranks.to_dict()
+
+    return results
 
 def get_structural_similarity_matrix(a, a_labels, b=None, b_labels=None, fp_type='', similarity_measure="jaccard"):
     if b is None or b_labels is None:

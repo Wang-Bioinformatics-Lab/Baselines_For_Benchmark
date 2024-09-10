@@ -68,6 +68,22 @@ def top_k_similarities_line_plot(top_scores,):
     plt.legend()
     return fig
 
+def top_k_distance_line_plot(top_scores):
+    fig = plt.figure(figsize=(6, 6))
+    # Concatenate the difference scores into a single array
+    differance_array = np.stack(list(top_scores['difference_dict'].values()))
+
+    # Average
+    difference_mean = np.nanmean(differance_array, axis=0)
+
+    # Line Plot
+    plt.plot(np.arange(len(difference_mean)), difference_mean)
+    plt.ylim(0.0, 1)
+    plt.xlabel("Rank")
+    plt.ylabel("Difference of Tanimoto Score Means")
+    plt.title("Top 10 Tanimoto Scores")
+    return fig
+
 def top_k_similarities_violin_plot(top_scores):
     data = []
     ranks = np.arange(len(next(iter(top_scores['top_k_scores'].values()))))
@@ -86,7 +102,6 @@ def top_k_similarities_violin_plot(top_scores):
     sns.violinplot(x='Rank', y='Score', hue='Type', data=df, split=True, inner="quartile")
     plt.xlabel("Rank")
     plt.ylabel("Tanimoto Score")
-    plt.ylim(0, 1)
     plt.title("Top 10 Tanimoto Scores vs Theoretical Max")
     plt.legend(title="Score Type", bbox_to_anchor=(1.05, 1), loc='upper left')
     return fig
@@ -114,7 +129,7 @@ def main():
     presampled_pairs = dd.read_parquet(prediction_path)
 
     print(presampled_pairs.head(10))
-    
+
     overall_rmse = da.sqrt(da.mean(da.square(presampled_pairs['error']))).compute()
     print("Overall RMSE (from evaluate()):", overall_rmse)
     overall_mae =  da.mean(da.abs(presampled_pairs['error'])).compute()
@@ -142,6 +157,9 @@ def main():
     # Violin Plot
     fig = top_k_similarities_violin_plot(top_scores)
     fig.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_violin.png'))
+    # Line Plot for Differences
+    fig = top_k_distance_line_plot(top_scores)
+    fig.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_distance_line.png'))
 
     print("Calculating Top K Tanimoto Scores (excluding identical inchikeys)", flush=True)
     top_scores_no_identical = get_top_k_scores(presampled_pairs, k=10, remove_identical_inchikeys=True)
@@ -157,33 +175,62 @@ def main():
     # Violin Plot
     fig = top_k_similarities_violin_plot(top_scores_no_identical)
     fig.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_no_identical_violin.png'))
+    # Line Plot for Differences
+    fig = top_k_distance_line_plot(top_scores_no_identical)
+    fig.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_no_identical_distance_line.png'))
 
     # Calculate Top k Analysis
     print("Creating Top k Analysis", flush=True)
-    top_1_metrics = top_k_analysis(presampled_pairs, remove_identical_inchikeys=True)
-    top_1_metrics_w_identical = top_k_analysis(presampled_pairs, remove_identical_inchikeys=False)
+    k_lst = [1,3,10]
+    top_k_metrics = top_k_analysis(presampled_pairs, k_list=k_lst, remove_identical_inchikeys=True)
+    top_k_metrics_w_identical = top_k_analysis(presampled_pairs, k_list=k_lst, remove_identical_inchikeys=False)
     # Each dict contains 'mean_top_rank' and 'std_top_rank'
-    top_1_path = os.path.join(metric_dir, "top_1_metrics.pkl")
-    pickle.dump(top_1_metrics, open(top_1_path, "wb"))
-    top_1_path = os.path.join(metric_dir, "top_1_metrics_w_identical.pkl")
-    pickle.dump(top_1_metrics_w_identical, open(top_1_path, "wb"))
+    top_k_path = os.path.join(metric_dir, "top_k_metrics.pkl")
+    pickle.dump(top_k_metrics, open(top_k_path, "wb"))
+    top_k_path = os.path.join(metric_dir, "top_k_metrics_w_identical.pkl")
+    pickle.dump(top_k_metrics_w_identical, open(top_k_path, "wb"))
 
-    # Bar chart with error bars comparing the two
-    plt.figure(figsize=(6, 6))
-    plt.bar([0, 1], [top_1_metrics['mean_top_rank'], top_1_metrics_w_identical['mean_top_rank']], yerr=[top_1_metrics['std_top_rank'], top_1_metrics_w_identical['std_top_rank']])
-    plt.xticks([0, 1], ['Non-Identical InChI', 'Identical InChI'])
+    # Bar chart with error bars comparing the two for all k values
+    plt.figure(figsize=(8, 6))
+    mean_values = []
+    std_values = []
+    labels = []
+
+    for k in k_lst:
+        mean_values.append([top_k_metrics[k]['mean_top_rank'], top_k_metrics_w_identical[k]['mean_top_rank']])
+        std_values.append([top_k_metrics[k]['std_top_rank'], top_k_metrics_w_identical[k]['std_top_rank']])
+        labels.append(f'k={k} Non-Identical InChI')
+        labels.append(f'k={k} Identical InChI')
+
+    mean_values = np.array(mean_values).flatten()
+    std_values = np.array(std_values).flatten()
+    positions = np.arange(len(mean_values))
+
+    plt.bar(positions, mean_values, yerr=std_values)
+    plt.xticks(positions, labels, rotation=45, ha="right")
     plt.ylabel("Mean Top Rank")
-    plt.title("Predicted Rank of Highest Similarity\nStructure")
-    plt.savefig(os.path.join(metric_dir, 'top_1_analysis.png'))
+    plt.title("Predicted Rank of Highest Similarity\nStructure for Various k")
+    plt.tight_layout()
+    plt.savefig(os.path.join(metric_dir, 'top_k_analysis_bar.png'))
 
-    # Violin Plot of Top k Analysis
-    plt.figure(figsize=(6, 6))
-    plt.violinplot([list(top_1_metrics['all_ranks'].values()), list(top_1_metrics_w_identical['all_ranks'].values())],
-                   showmedians=True,)
-    plt.xticks([1, 2], ['Non-Identical InChI', 'Identical InChI'])
+    # Violin Plot of Top k Analysis for all k values
+    plt.figure(figsize=(8, 6))
+    all_ranks = []
+    labels = []
+
+    for k in k_lst:
+        all_ranks.append(list(top_k_metrics[k]['all_ranks'].values()))
+        all_ranks.append(list(top_k_metrics_w_identical[k]['all_ranks'].values()))
+        labels.append(f'k={k} Non-Identical InChI')
+        labels.append(f'k={k} Identical InChI')
+
+    plt.violinplot(all_ranks, showmedians=True)
+    plt.xticks(np.arange(1, len(labels) + 1), labels, rotation=45, ha="right")
     plt.ylabel("Top Rank")
-    plt.title("Predicted Rank of Highest Similarity\nStructure")
-    plt.savefig(os.path.join(metric_dir, 'top_1_analysis_violin.png'))
+    plt.title("Predicted Rank of Highest Similarity\nStructure for Various k")
+    plt.tight_layout()
+    plt.savefig(os.path.join(metric_dir, 'top_k_analysis_violin.png'))
+
 
     # Calculate ROC Curve
     print("Creating ROC Curve", flush=True)
@@ -348,7 +395,12 @@ def main():
     # Transform counts by log base 10 +1
     counts = np.log10(counts + 1)
     plt.imshow(counts, vmin=0, origin='lower')
-    plt.colorbar()
+    cbar = plt.colorbar()
+    cbar_ticks = cbar.get_ticks()
+    cbar_labels = [f'$10^{{{int(tick)}}}$' for tick in cbar_ticks]
+    cbar.set_label('Log Count')
+    cbar.set_ticks(cbar_ticks)
+    cbar.set_ticklabels(cbar_labels)
     plt.title('Pairwise & Train-Test Dependent Counts')
     plt.ylabel('Pairwise Structural Similarity')
     plt.xlabel('Max Test-Train Structural Similarity')
