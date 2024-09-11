@@ -10,7 +10,7 @@ import dask
 import os
 from tqdm import tqdm
 
-def roc_curve(prediction_df:dask.dataframe, threshold_lst:str):
+def roc_curve(prediction_df:dask.dataframe, threshold_lst:str, precursor_ppm_diff:float=10, exclude_identical_inchikeys:bool=False, positive_threshold:float=None)->dict:
     """Compute the ROC curve for the given prediction dataframe and threshold list.
     Excludes identical spectrum ids from consideration.
 
@@ -20,20 +20,38 @@ def roc_curve(prediction_df:dask.dataframe, threshold_lst:str):
         DataFrame containing the predictions and ground truth similarities.
     threshold_lst : str
         List of thresholds to evaluate the ROC curve.
+    precursor_ppm_diff : float, optional
+        Maximum precursor ppm difference to consider, by default 10
+    exclude_identical_inchikeys : bool, optional
+        If True, exclude pairs with identical inchikeys, by default False
+    positive_threshold : float, optional
+        Threshold for positive predictions, by default None. Can only be specified if exclude_identical_inchikeys is True.
 
     Returns
     -------
     dict
         Dictionary containing the true positive rate, false positive rate, AUC, and thresholds.
     """
+    if exclude_identical_inchikeys and not positive_threshold:
+        raise ValueError("Positive threshold must be specified if exclude_identical_inchikeys is True")
+    if not exclude_identical_inchikeys and positive_threshold:
+        raise ValueError("Positive threshold cannot be specified if exclude_identical_inchikeys is False")
+
     # Reduce dataframe selection to pairs with < 10 ppm
-    prediction_df = prediction_df.loc[prediction_df['precursor_ppm_diff'] < 10]
+    prediction_df = prediction_df.loc[prediction_df['precursor_ppm_diff'] < precursor_ppm_diff]
     # Remove predictions with identical spectrum_ids
     prediction_df = prediction_df.loc[prediction_df['spectrumid1'] != prediction_df['spectrumid2']]
+    if exclude_identical_inchikeys:
+        assert positive_threshold is not None, "Positive threshold must be specified if exclude_identical_inchikeys is True"
+        prediction_df = prediction_df.loc[(prediction_df['inchikey1'] != prediction_df['inchikey2'])]
+
     # Remove failed predictions
     prediction_df = prediction_df.loc[prediction_df['predicted_similarity'] != -1]
 
-    prediction_df['positive'] = prediction_df['inchikey1'] == prediction_df['inchikey2']
+    if positive_threshold is None:
+        prediction_df['positive'] = prediction_df['inchikey1'] == prediction_df['inchikey2']
+    else:
+        prediction_df['positive'] = prediction_df['ground_truth_similarity'] >= positive_threshold
 
     tp_lst = []
     fp_lst = []
@@ -41,6 +59,8 @@ def roc_curve(prediction_df:dask.dataframe, threshold_lst:str):
     fn_lst = []
 
     for threshold in threshold_lst:
+        total_positive = delayed(sum)(prediction_df['positive'])
+        total_negative = delayed(sum)(prediction_df['positive'] == False)
         tp = delayed(sum)(prediction_df.loc[prediction_df['predicted_similarity'] >= threshold]['positive'])
         fp = delayed(sum)(prediction_df.loc[prediction_df['predicted_similarity'] >= threshold]['positive'] == False)
         tn = delayed(sum)(prediction_df.loc[prediction_df['predicted_similarity'] < threshold]['positive'] == False)
@@ -58,8 +78,6 @@ def roc_curve(prediction_df:dask.dataframe, threshold_lst:str):
     tpr = [tp/(tp + fn) for tp, fn in zip(tp_lst, fn_lst)]
 
     auc = np.trapz(tpr, fpr)
-    print(fpr)
-    print(tpr)
 
     return {'tp': tp_lst,
             'fp': fp_lst,
@@ -68,7 +86,78 @@ def roc_curve(prediction_df:dask.dataframe, threshold_lst:str):
             'fpr': fpr,
             'tpr':tpr,
             'auc': auc,
-            'thresholds': threshold_lst}
+            'thresholds': threshold_lst,
+            'total_positive': total_positive,
+            'total_negative': total_negative}
+
+def pr_curve(prediction_df:dask.dataframe, threshold_lst:str, precursor_ppm_diff:float=10, exclude_identical_inchikeys:bool=False, positive_threshold:float=None)->dict:
+    """Compute the precision-recall curve for the given prediction dataframe and threshold list.
+    Excludes identical spectrum ids from consideration.
+
+    Parameters
+    ----------
+    prediction_df : dask.dataframe
+        DataFrame containing the predictions and ground truth similarities.
+    threshold_lst : str
+        List of thresholds to evaluate the precision-recall curve.
+    precursor_ppm_diff : float, optional
+        Maximum precursor ppm difference to consider, by default 10
+    exclude_identical_inchikeys : bool, optional
+        If True, exclude pairs with identical inchikeys, by default False
+    positive_threshold : float, optional
+        Threshold for positive predictions, by default None. Can only be specified if exclude_identical_inchikeys is True.
+
+    Returns
+    -------
+    dict
+        Dictionary containing the precision, recall, and thresholds.
+    """
+    if exclude_identical_inchikeys and not positive_threshold:
+        raise ValueError("Positive threshold must be specified if exclude_identical_inchikeys is True")
+    if not exclude_identical_inchikeys and positive_threshold:
+        raise ValueError("Positive threshold cannot be specified if exclude_identical_inchikeys is False")
+
+    # Reduce dataframe selection to pairs with < 10 ppm
+    prediction_df = prediction_df.loc[prediction_df['precursor_ppm_diff'] < precursor_ppm_diff]
+    # Remove predictions with identical spectrum_ids
+    prediction_df = prediction_df.loc[prediction_df['spectrumid1'] != prediction_df['spectrumid2']]
+    if exclude_identical_inchikeys:
+        assert positive_threshold is not None, "Positive threshold must be specified if exclude_identical_inchikeys is True"
+        prediction_df = prediction_df.loc[(prediction_df['inchikey1'] != prediction_df['inchikey2'])]
+
+    # Remove failed predictions
+    prediction_df = prediction_df.loc[prediction_df['predicted_similarity'] != -1]
+
+    if positive_threshold is None:
+        prediction_df['positive'] = prediction_df['inchikey1'] == prediction_df['inchikey2']
+    else:
+        prediction_df['positive'] = prediction_df['ground_truth_similarity'] >= positive_threshold
+
+    precision_lst = []
+    recall_lst = []
+
+    for threshold in threshold_lst:
+        total_positive = delayed(sum)(prediction_df['positive'])
+        total_negative = delayed(sum)(prediction_df['positive'] == False)
+        tp = delayed(sum)(prediction_df.loc[prediction_df['predicted_similarity'] >= threshold]['positive'])
+        fp = delayed(sum)(prediction_df.loc[prediction_df['predicted_similarity'] >= threshold]['positive'] == False)
+        fn = delayed(sum)(prediction_df.loc[prediction_df['predicted_similarity'] < threshold]['positive'])
+
+        precision = tp / (tp + fp + 1e-10)
+        recall = tp / (tp + fn + 1e-10)
+
+        precision_lst.append(precision)
+        recall_lst.append(recall)
+
+    precision_lst, recall_lst = compute(precision_lst, recall_lst)
+    auc = np.trapz(precision_lst, recall_lst)
+
+    return {'precision': precision_lst,
+            'recall': recall_lst,
+            'auc': auc,
+            'thresholds': threshold_lst,
+            'total_positive': total_positive,
+            'total_negative': total_negative}
 
 def get_top_k_scores(prediction_df:dask.dataframe, k=1, remove_identical_inchikeys:bool=False)->dict:
     """Get the tanimoto scores of the top-k predictions for each spectrum. Optionally, excludes pairs with identical inchikeys.
@@ -112,7 +201,7 @@ def get_top_k_scores(prediction_df:dask.dataframe, k=1, remove_identical_inchike
     # Get top-k scores within groups
     top_k_scores = grouped.apply(calculate_top_k_scores, meta=('top_k_scores', 'f8'))
 
-    def calculate_max_score(df):
+    def calculate_optimal(df):
         h = df['ground_truth_similarity'].values
         h = h[np.argsort(-h)]
         h = h[:k]
@@ -120,32 +209,73 @@ def get_top_k_scores(prediction_df:dask.dataframe, k=1, remove_identical_inchike
         return np.pad(h, (0, k - len(h)), constant_values=np.nan)
 
     # Get top-k ground truth scores within groups
-    max_scores = grouped.apply(calculate_max_score, meta=('max_scores', 'f8'))
+    optimal_scores = grouped.apply(calculate_optimal, meta=('optimal_scores', 'f8'))
 
-    # Compute both top_k_scores and max_scores in a single compute call
-    top_k_scores, max_scores = dask.compute(top_k_scores, max_scores)
+    # Compute both top_k_scores and optimal_scores in a single compute call
+    top_k_scores, optimal_scores = dask.compute(top_k_scores, optimal_scores)
 
     # Convert the results to dictionaries
     top_k_scores = top_k_scores.to_dict()
-    max_scores = max_scores.to_dict()
+    optimal_scores = optimal_scores.to_dict()
 
     keys = list(top_k_scores.keys())
     
-    difference_dict = {k: max_scores[k] - top_k_scores[k] for k in keys}
+    difference_dict = {k: optimal_scores[k] - top_k_scores[k] for k in keys}
     
     top_scores_array = np.stack([top_k_scores[key] for key in keys])
-    max_scores_array = np.stack([max_scores[key] for key in keys])
+    optimal_scores_array = np.stack([optimal_scores[key] for key in keys])
     difference_array = np.stack([difference_dict[key] for key in keys])
 
     # Get average from 0-0, 0,1,... 0-k-1
     top_scores_averages = [np.nanmean(top_scores_array[:, :i+1]) for i in range(k)]
-    max_scores_averages = [np.nanmean(max_scores_array[:, :i+1]) for i in range(k)]
+    optimal_scores_averages = [np.nanmean(optimal_scores_array[:, :i+1]) for i in range(k)]
     difference_averages = [np.nanmean(difference_array[:, :i+1]) for i in range(k)]
+    # Get mean of max from 0-0, 0-1, 0-2, ..., 0-k-1
+    top_scores_maxes = [np.nanmean(np.nanmax(top_scores_array[:, :i+1], axis=1)) for i in range(k)]
+    optimal_scores_maxes = [np.nanmean(np.nanmax(optimal_scores_array[:, :i+1], axis=1)) for i in range(k)]
+    difference_maxes = [np.nanmean(np.nanmax(difference_array[:, :i+1], axis=1)) for i in range(k)]
 
-    return {'top_k_scores': top_k_scores, 'max_scores': max_scores, 'difference_dict': difference_dict, 
-            'top_scores_averages': top_scores_averages, 'max_scores_averages': max_scores_averages, 'difference_averages': difference_averages}
+    return {'top_k_scores': top_k_scores, 'optimal_scores': optimal_scores, 'difference_dict': difference_dict,
+            'top_scores_averages': top_scores_averages, 'optimal_scores_averages': optimal_scores_averages, 'difference_averages': difference_averages,
+            'top_scores_maxes': top_scores_maxes, 'optimal_scores_maxes': optimal_scores_maxes, 'difference_maxes': difference_maxes}
 
-def top_k_analysis(prediction_df: dd.DataFrame, k_list=[1], remove_identical_inchikeys: bool = False) -> dict:
+def get_top_k_scores_for_bins(prediction_df:dask.dataframe, train_test_similarity_bins:np.ndarray, k=1, remove_identical_inchikeys:bool=False)->dict:
+    """Get the tanimoto scores of the top-k predictions for each spectrum in each bin of the train-test similarity.
+    Optionally, excludes pairs with identical inchikeys.
+    Also returns the theoretical maximum score for each spectrum.
+
+    Parameters
+    ----------
+    prediction_df : dask.dataframe
+        DataFrame containing the predictions and ground truth similarities.
+    train_test_similarity_bins : np.ndarray
+        Bins for the train-test similarity to evaluate the performance of scores.
+    k : int, optional
+        The number of top predictions to consider, by default 1
+    remove_identical_inchikeys : bool, optional
+        If True, exclude pairs with identical inchikeys, by default False
+
+    Returns
+    -------
+    dict
+        Dictionary containing the top-k scores and theoretical maximum scores for each spectrum in each bin.
+    """
+    prediction_df = prediction_df.loc[prediction_df['spectrumid1'] != prediction_df['spectrumid2']]
+
+    if remove_identical_inchikeys:
+        prediction_df = prediction_df.loc[prediction_df['inchikey1'] != prediction_df['inchikey2']]
+
+    outputs = {}
+    for i in range(len(train_test_similarity_bins)-1):
+        low = train_test_similarity_bins[i]
+        high = train_test_similarity_bins[i+1]
+        _prediction_df = prediction_df.loc[(prediction_df['mean_max_train_test_sim'] >= low) & (prediction_df['mean_max_train_test_sim'] < high)]
+        outputs[f'({low:.2f}, {high:.2f})'] = delayed(get_top_k_scores)(_prediction_df, k, remove_identical_inchikeys)
+
+    return compute(outputs)[0]
+
+
+def top_k_analysis(prediction_df: dd.DataFrame, k_list=[1], remove_identical_inchikeys: bool = False, save_ranks=True) -> dict:
     """Get the rank of the most similar structure in the prediction_df for each spectrum.
     Optionally, excludes pairs with identical inchikeys simulating an analogue search setting.
     Always excludes pairs with identical spectrum ids.
@@ -158,6 +288,8 @@ def top_k_analysis(prediction_df: dd.DataFrame, k_list=[1], remove_identical_inc
         List of k values to consider, by default [1]
     remove_identical_inchikeys : bool, optional
         If True, exclude pairs with identical inchikeys, by default False
+    save_ranks : bool, optional
+        If True, save the ranks for each spectrum, by default True
 
     Returns
     -------
@@ -204,16 +336,49 @@ def top_k_analysis(prediction_df: dd.DataFrame, k_list=[1], remove_identical_inc
         ranks_dict[k] = ranks
 
     # Compute mean and standard deviation for each k in one go
-    means_and_stds = dd.compute({k: (r.mean(), np.median(r), r.std(), r) for k, r in ranks_dict.items()})[0]
+    means_and_stds = dd.compute({k: (r.mean(), np.median(r), np.min(r), r.std(), r) for k, r in ranks_dict.items()})[0]
 
-    for k, (mean, median, std, ranks) in means_and_stds.items():
+    for k, (mean, median, minimum, std, ranks) in means_and_stds.items():
         results[k] = {}
-        results[k]['median_top_rank'] = median
-        results[k]['mean_top_rank'] = mean
-        results[k]['std_top_rank'] = std
-        results[k]['all_ranks'] = ranks.to_dict()
+        results[k]['median_top_rank']   = median
+        results[k]['min_top_rank']      = minimum
+        results[k]['mean_top_rank']     = mean
+        results[k]['std_top_rank']      = std
+        if save_ranks:
+            results[k]['all_ranks']         = ranks.to_dict()
 
     return results
+
+def top_k_analysis_for_bins(prediction_df: dd.DataFrame, train_test_similarity_bins:np.ndarray, k_list=[1], remove_identical_inchikeys: bool = False):
+    """Get the rank of the most similar structure in the prediction_df for each spectrum in each bin of the train-test similarity.
+    Optionally, excludes pairs with identical inchikeys simulating an analogue search setting.
+    Always excludes pairs with identical spectrum ids.
+
+    Parameters
+    ----------
+    prediction_df : dask.dataframe
+        DataFrame containing the predictions and ground truth similarities.
+    train_test_similarity_bins : np.ndarray
+        Bins for the train-test similarity to evaluate the performance of scores.
+    k_list : list, optional
+        List of k values to consider, by default [1]
+    remove_identical_inchikeys : bool, optional
+        If True, exclude pairs with identical inchikeys, by default False
+
+    Returns
+    -------
+    dict
+        Dictionary containing the mean and standard deviation of ranks for each value of k in each bin.
+    """
+    outputs = {}
+    for i in range(len(train_test_similarity_bins)-1):
+        low = train_test_similarity_bins[i]
+        high = train_test_similarity_bins[i+1]
+        _prediction_df = prediction_df.loc[(prediction_df['mean_max_train_test_sim'] >= low) & (prediction_df['mean_max_train_test_sim'] < high)]
+         # Disable saving ranks for each prediciton to save memory, I/O, and computation time
+        outputs[f'({low:.2f}, {high:.2f})'] = delayed(top_k_analysis)(_prediction_df, k_list, remove_identical_inchikeys, save_ranks=False)
+
+    return compute(outputs)[0]
 
 def get_structural_similarity_matrix(a, a_labels, b=None, b_labels=None, fp_type='', similarity_measure="jaccard"):
     if b is None or b_labels is None:

@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 import os
 
+from matplotlib import cm
 import pandas as pd
 import dask.dataframe as dd
 import dask.array as da
@@ -23,7 +24,9 @@ from utils import train_test_similarity_dependent_losses, \
                     pairwise_train_test_dependent_heatmap, \
                     roc_curve, \
                     top_k_analysis, \
-                    get_top_k_scores
+                    get_top_k_scores, \
+                    get_top_k_scores_for_bins, \
+                    pr_curve
 
 plt.rcParams.update({
     "text.usetex": False,
@@ -48,19 +51,19 @@ def top_k_similarities_line_plot(top_scores,):
     fig = plt.figure(figsize=(6, 6))
     # Concatenate the top scores and max scores into a single array
     top_scores_array = np.stack(list(top_scores['top_k_scores'].values()))
-    max_scores_array = np.stack(list(top_scores['max_scores'].values()))
+    optimal_scores_array = np.stack(list(top_scores['optimal_scores'].values()))
     # Average 
     top_scores_mean = np.nanmean(top_scores_array, axis=0)
-    max_scores_mean = np.nanmean(max_scores_array, axis=0)
+    optimal_scores_mean = np.nanmean(optimal_scores_array, axis=0)
     # Standard Deviation
     # top_scores_std = np.nanstd(top_scores_array, axis=0)
-    # max_scores_std = np.nanstd(max_scores_array, axis=0)
+    # optimal_scores_std = np.nanstd(optimal_scores_array, axis=0)
     # Line Plot with Error Bars
     # plt.errorbar(np.arange(len(top_scores_mean)), top_scores_mean, yerr=top_scores_std, label="Top 10 Predictions")
-    # plt.errorbar(np.arange(len(max_scores_mean)), max_scores_mean, yerr=max_scores_std, label="Theoretical Max")
+    # plt.errorbar(np.arange(len(optimal_scores_mean)), optimal_scores_mean, yerr=optimal_scores_std, label="Theoretical Max")
     # Regular line plot
     plt.plot(np.arange(len(top_scores_mean)), top_scores_mean, label="Top 10 Predictions")
-    plt.plot(np.arange(len(max_scores_mean)), max_scores_mean, label="Theoretical Max")
+    plt.plot(np.arange(len(optimal_scores_mean)), optimal_scores_mean, label="Theoretical Max")
     plt.ylim(-0.1, 1.1)
     plt.xlabel("Rank")
     plt.ylabel("Tanimoto Score")
@@ -88,11 +91,11 @@ def top_k_similarities_violin_plot(top_scores):
     data = []
     ranks = np.arange(len(next(iter(top_scores['top_k_scores'].values()))))
     top_scores_array = np.stack(list(top_scores['top_k_scores'].values()))
-    max_scores_array = np.stack(list(top_scores['max_scores'].values()))
+    optimal_scores_array = np.stack(list(top_scores['optimal_scores'].values()))
     for i, rank in enumerate(ranks):
         for score in top_scores_array[:, i]:
             data.append({'Rank': rank, 'Score': score, 'Type': 'Top 10 Predictions'})
-        for score in max_scores_array[:, i]:
+        for score in optimal_scores_array[:, i]:
             data.append({'Rank': rank, 'Score': score, 'Type': 'Theoretical Max'})
 
     df = pd.DataFrame(data)
@@ -146,7 +149,7 @@ def main():
     print("Creating Top K Tanimoto Score Analysis Including Identical InChIKeys", flush=True)
     top_scores = get_top_k_scores(presampled_pairs, k=10)
     print("top_scores_averages:", [f"{x:.4f}" for x in top_scores['top_scores_averages']])
-    print("max_scores_averages:", [f"{x:.4f}" for x in top_scores['max_scores_averages']])
+    print("optimal_scores_averages:", [f"{x:.4f}" for x in top_scores['optimal_scores_averages']])
     print("difference_averages:", [f"{x:.4f}" for x in top_scores['difference_averages']])
     # Save the top scores
     top_scores_path = os.path.join(metric_dir, "top_k_scores.pkl")
@@ -164,7 +167,7 @@ def main():
     print("Calculating Top K Tanimoto Scores (excluding identical inchikeys)", flush=True)
     top_scores_no_identical = get_top_k_scores(presampled_pairs, k=10, remove_identical_inchikeys=True)
     print("top_scores_averages:", [f"{x:.4f}" for x in top_scores_no_identical['top_scores_averages']])
-    print("max_scores_averages:", [f"{x:.4f}" for x in top_scores_no_identical['max_scores_averages']])
+    print("optimal_scores_averages:", [f"{x:.4f}" for x in top_scores_no_identical['optimal_scores_averages']])
     print("difference_averages:", [f"{x:.4f}" for x in top_scores_no_identical['difference_averages']])
     # Save the top scores
     top_scores_path = os.path.join(metric_dir, "top_k_scores_no_identical.pkl")
@@ -178,6 +181,41 @@ def main():
     # Line Plot for Differences
     fig = top_k_distance_line_plot(top_scores_no_identical)
     fig.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_no_identical_distance_line.png'))
+
+    # Binned Top-K Scores
+    print("Creating Binned Top K Tanimoto Scores", flush=True)
+    top_scores_binned_w_identical = get_top_k_scores_for_bins(presampled_pairs, TT_SIM_BINS, k=10, remove_identical_inchikeys=False)
+    top_scores_binned_no_identical = get_top_k_scores_for_bins(presampled_pairs, TT_SIM_BINS, k=10, remove_identical_inchikeys=True)
+    # Dumpy to pikle
+    output_path = os.path.join(metric_dir, "top_k_scores_binned_w_identical.pkl")
+    pickle.dump(top_scores_binned_w_identical, open(output_path, "wb"))
+    output_path = os.path.join(metric_dir, "top_k_scores_binned_no_identical.pkl")
+    pickle.dump(top_scores_binned_no_identical, open(output_path, "wb"))
+    # Plot Mean Distance to Optimal Tanimoto Scores
+    cmap = cm.get_cmap('viridis', len(top_scores_binned_w_identical.keys()))
+    plt.figure(figsize=(10,7))
+    for idx, k in enumerate(top_scores_binned_w_identical.keys()):
+        color = cmap(idx / len(top_scores_binned_w_identical.keys()))
+        data = np.array(top_scores_binned_w_identical[k]['optimal_scores_averages']) - np.array(top_scores_binned_w_identical[k]['top_scores_averages'])
+        plt.plot(np.arange(len(data)), data, '--o', label=k, color=color, markersize=8)
+
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', title='Train-Test Similarity')
+    plt.ylabel("Mean Distance to Optimal Tanimoto Score")
+    plt.xlabel("Prediction Rank")
+    plt.xticks(np.arange(len(data)), np.arange(1, len(data) + 1))
+    plt.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_binned_w_identical.png'), bbox_inches="tight")
+
+    plt.figure(figsize=(10,7))
+    for idx, k in enumerate(top_scores_binned_no_identical.keys()):
+        color = cmap(idx / len(top_scores_binned_no_identical.keys()))
+        data = np.array(top_scores_binned_no_identical[k]['optimal_scores_averages']) - np.array(top_scores_binned_no_identical[k]['top_scores_averages'])
+        plt.plot(np.arange(len(data)), data, '--o', label=k, color=color, markersize=8)
+
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', title='Train-Test Similarity')
+    plt.ylabel("Mean Distance to Optimal Tanimoto Score")
+    plt.xlabel("Prediction Rank")
+    plt.xticks(np.arange(len(data)), np.arange(1, len(data) + 1))
+    plt.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_binned_no_identical.png'), bbox_inches="tight")
 
     # Calculate Top k Analysis
     print("Creating Top k Analysis", flush=True)
@@ -233,17 +271,60 @@ def main():
 
 
     # Calculate ROC Curve
-    print("Creating ROC Curve", flush=True)
-    roc_metrics = roc_curve(presampled_pairs, np.linspace(1.0,0.0, 41))
-    roc_path = os.path.join(metric_dir, "roc_metrics.pkl")
-    pickle.dump(roc_metrics, open(roc_path, "wb"))
+    print("Creating ROC Curve Including Identical InChiKeys", flush=True)
+    roc_metrics_w_identical = roc_curve(presampled_pairs, np.linspace(1.0,0.0, 41), exclude_identical_inchikeys=False)
+    roc_path = os.path.join(metric_dir, "roc_metrics_w_identical.pkl")
+    pickle.dump(roc_metrics_w_identical, open(roc_path, "wb"))
     plt.figure(figsize=(6, 6))
-    plt.plot(roc_metrics["fpr"], roc_metrics["tpr"])
+    plt.plot(roc_metrics_w_identical["fpr"], roc_metrics_w_identical["tpr"])
     plt.plot([0, 1], [0, 1], 'k--')
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
-    plt.title(f"ROC Curve (AUC={roc_metrics['auc']:.2f})")
+    plt.title(f"ROC Curve (AUC={roc_metrics_w_identical['auc']:.2f})")
     plt.savefig(os.path.join(metric_dir, 'roc_curve.png'))
+
+    # Calculate ROC Curve Excluding Identical InChiKeys
+    print("Creating ROC Curve Excluding Identical InChiKeys", flush=True)
+    # 250_000 ppm would mean no more than a 25% mass delta
+    roc_metrics_no_identical = roc_curve(presampled_pairs, np.linspace(1.0,0.0, 41), precursor_ppm_diff=250_000, exclude_identical_inchikeys=True, positive_threshold=0.6)
+    roc_path = os.path.join(metric_dir, "roc_metrics_no_identical.pkl")
+    pickle.dump(roc_metrics_no_identical, open(roc_path, "wb"))
+    plt.figure(figsize=(6, 6))
+    plt.plot(roc_metrics_no_identical["fpr"], roc_metrics_no_identical["tpr"])
+    plt.plot([0, 1], [0, 1], 'k--')
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title(f"ROC Curve (AUC={roc_metrics_no_identical['auc']:.2f})")
+    plt.savefig(os.path.join(metric_dir, 'roc_curve_no_identical.png'))
+
+    # Calculate PR Curve Including Identical InChiKeys
+    print("Creating PR Curve Including Identical InChiKeys", flush=True)
+    pr_metrics_w_identical = pr_curve(presampled_pairs, np.linspace(1.0,0.0, 41), exclude_identical_inchikeys=False)
+    pr_path = os.path.join(metric_dir, "pr_metrics.pkl")
+    pickle.dump(pr_metrics_w_identical, open(pr_path, "wb"))
+    plt.figure(figsize=(6, 6))
+    plt.plot(pr_metrics_w_identical["recall"], pr_metrics_w_identical["precision"])
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title(f"PR Curve (AUC={pr_metrics_w_identical['auc']:.2f})")
+    plt.savefig(os.path.join(metric_dir, 'pr_curve.png'))
+
+    # Calculate PR Curve Excluding Identical InChiKeys
+    print("Creating PR Curve Excluding Identical InChiKeys", flush=True)
+    pr_metrics_no_identical = pr_curve(presampled_pairs, np.linspace(1.0,0.0, 41), precursor_ppm_diff=250_000, exclude_identical_inchikeys=True, positive_threshold=0.6)
+    pr_path = os.path.join(metric_dir, "pr_metrics_no_identical.pkl")
+    pickle.dump(pr_metrics_no_identical, open(pr_path, "wb"))
+    plt.figure(figsize=(6, 6))
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    plt.plot(pr_metrics_no_identical["recall"], pr_metrics_no_identical["precision"])
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title(f"PR Curve (AUC={pr_metrics_no_identical['auc']:.2f})")
+    plt.savefig(os.path.join(metric_dir, 'pr_curve_no_identical.png'))
+
 
     # Train-Test Similarity Dependent Losses Aggregated (rmse)
     print("Creating Train-Test Similarity Dependent Losses Aggregated Plot", flush=True)
