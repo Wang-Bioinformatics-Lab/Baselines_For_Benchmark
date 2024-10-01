@@ -4,12 +4,14 @@ from matchms.filtering import add_fingerprint
 from matchms.similarity import FingerprintSimilarity
 from dask import delayed, compute
 import dask.dataframe as dd
+import dask.array as da
 from dask.diagnostics import ProgressBar
 from concurrent.futures import ThreadPoolExecutor
 import dask
 import os
 from glob import glob
 from tqdm import tqdm
+from time import time
 
 def roc_curve(prediction_df:dask.dataframe, threshold_lst:str, precursor_ppm_diff:float=10, exclude_identical_inchikeys:bool=False, positive_threshold:float=None)->dict:
     """Compute the ROC curve for the given prediction dataframe and threshold list.
@@ -160,7 +162,13 @@ def pr_curve(prediction_df:dask.dataframe, threshold_lst:str, precursor_ppm_diff
             'total_positive': total_positive,
             'total_negative': total_negative}
 
-def get_top_k_scores(prediction_df:str, k=1, remove_identical_inchikeys:bool=False)->dict:
+
+def _extract_spectrum_id(_p):
+    _p = _p.split('/')[-1]
+    # Get "spectrumid1=<spec id>.parquet"
+    return _p.split('=')[-1]
+
+def get_top_k_scores(prediction_df:str, k=1, remove_identical_inchikeys:bool=False, tt_sim_lower:float=None, tt_sim_upper:float=None)->dict:
     """Get the tanimoto scores of the top-k predictions for each spectrum. Optionally, excludes pairs with identical inchikeys.
     Also returns the theoretical maximum score for each spectrum.
 
@@ -172,12 +180,22 @@ def get_top_k_scores(prediction_df:str, k=1, remove_identical_inchikeys:bool=Fal
         The number of top predictions to consider, by default 1
     remove_identical_inchikeys : bool, optional
         If True, exclude pairs with identical inchikeys, by default False
-
+    tt_sim_lower : float, optional
+        Lower bound for the train-test similarity, by default None
+    tt_sim_upper : float, optional
+        Upper bound for the train-test similarity, by default None
+        
     Returns
     -------
     dict
         Dictionary containing the top-k scores and theoretical maximum scores for each spectrum.
     """
+
+    # If one bound is specified, the other must be specified as well
+    if tt_sim_lower is not None and tt_sim_upper is None:
+        raise ValueError("Both lower and upper bounds must be specified for the train-test similarity")
+    if tt_sim_upper is not None and tt_sim_lower is None:
+        raise ValueError("Both lower and upper bounds must be specified for the train-test similarity")
 
     def calculate_top_k_scores(df):
         h = df.nlargest(k, columns='predicted_similarity', keep='all').iloc[:k]['ground_truth_similarity'].values
@@ -192,11 +210,6 @@ def get_top_k_scores(prediction_df:str, k=1, remove_identical_inchikeys:bool=Fal
         # Right pad with np.nan if there are less than k values
         return np.pad(h, (0, k - len(h)), constant_values=np.nan)
 
-    def _extract_spectrum_id(_p):
-        _p = _p.split('/')[-1]
-        # Get "spectrumid1=<spec id>.parquet"
-        return _p.split('=')[-1]
-
     top_k_scores_queue = {}
     optimal_scores_queue = {}
     # Manual apply to avoid dealing with shuffles
@@ -207,6 +220,9 @@ def get_top_k_scores(prediction_df:str, k=1, remove_identical_inchikeys:bool=Fal
         df = df.loc[spec_id != df['spectrumid2']]
         if remove_identical_inchikeys:
             df = df.loc[df['inchikey1'] != df['inchikey2']]
+        if tt_sim_lower is not None and tt_sim_upper is not None:
+            df = df.loc[(df['mean_max_train_test_sim'] >= tt_sim_lower) & (df['mean_max_train_test_sim'] < tt_sim_upper)]
+
         top_k_scores_queue[spec_id] = delayed(calculate_top_k_scores)(df)
         optimal_scores_queue[spec_id] = delayed(calculate_optimal)(df)
 
@@ -216,7 +232,7 @@ def get_top_k_scores(prediction_df:str, k=1, remove_identical_inchikeys:bool=Fal
     # Chunk the computation to avoid a large graph (will overwhelm scheduler)
     keys = list(top_k_scores_queue.keys())
     print(f"Executing Tasks for {len(keys)} spectra")
-    keys_split = np.array_split(keys, len(keys)//10000 + 1)
+    keys_split = np.array_split(keys, len(keys)//5000 + 1)
     for key_split in keys_split:
         top_k_scores, optimal_scores = dask.compute({k: top_k_scores_queue[k] for k in key_split}, {k: optimal_scores_queue[k] for k in key_split})
         # Add the chunk to the dictionary
@@ -236,6 +252,12 @@ def get_top_k_scores(prediction_df:str, k=1, remove_identical_inchikeys:bool=Fal
     top_scores_averages = [np.nanmean(top_scores_array[:, :i+1]) for i in range(k)]
     optimal_scores_averages = [np.nanmean(optimal_scores_array[:, :i+1]) for i in range(k)]
     difference_averages = [np.nanmean(difference_array[:, :i+1]) for i in range(k)]
+
+    # Get average at k
+    top_scores_k = [np.nanmean(top_scores_array[:, i]) for i in range(k)]
+    optimal_scores_k = [np.nanmean(optimal_scores_array[:, i]) for i in range(k)]
+    difference_k = [np.nanmean(difference_array[:, i]) for i in range(k)]
+
     # Get mean of max from 0-0, 0-1, 0-2, ..., 0-k-1
     top_scores_maxes = [np.nanmean(np.nanmax(top_scores_array[:, :i+1], axis=1)) for i in range(k)]
     optimal_scores_maxes = [np.nanmean(np.nanmax(optimal_scores_array[:, :i+1], axis=1)) for i in range(k)]
@@ -243,7 +265,8 @@ def get_top_k_scores(prediction_df:str, k=1, remove_identical_inchikeys:bool=Fal
 
     return {'top_k_scores': top_k_scores, 'optimal_scores': optimal_scores, 'difference_dict': difference_dict,
             'top_scores_averages': top_scores_averages, 'optimal_scores_averages': optimal_scores_averages, 'difference_averages': difference_averages,
-            'top_scores_maxes': top_scores_maxes, 'optimal_scores_maxes': optimal_scores_maxes, 'difference_maxes': difference_maxes}
+            'top_scores_maxes': top_scores_maxes, 'optimal_scores_maxes': optimal_scores_maxes, 'difference_maxes': difference_maxes,
+            'top_scores_k': top_scores_k, 'optimal_scores_k': optimal_scores_k, 'difference_k': difference_k}
 
 
 def get_top_k_scores_indexed(prediction_df:str, k=1, remove_identical_inchikeys:bool=False)->dict:
@@ -321,14 +344,14 @@ def get_top_k_scores_indexed(prediction_df:str, k=1, remove_identical_inchikeys:
             'top_scores_averages': top_scores_averages, 'optimal_scores_averages': optimal_scores_averages, 'difference_averages': difference_averages,
             'top_scores_maxes': top_scores_maxes, 'optimal_scores_maxes': optimal_scores_maxes, 'difference_maxes': difference_maxes}
 
-def get_top_k_scores_for_bins(prediction_df:dask.dataframe, train_test_similarity_bins:np.ndarray, k=1, remove_identical_inchikeys:bool=False)->dict:
+def get_top_k_scores_for_bins(prediction_df:str, train_test_similarity_bins:np.ndarray, k=1, remove_identical_inchikeys:bool=False)->dict:
     """Get the tanimoto scores of the top-k predictions for each spectrum in each bin of the train-test similarity.
     Optionally, excludes pairs with identical inchikeys.
     Also returns the theoretical maximum score for each spectrum.
 
     Parameters
     ----------
-    prediction_df : dask.dataframe
+    prediction_df : str
         DataFrame containing the predictions and ground truth similarities.
     train_test_similarity_bins : np.ndarray
         Bins for the train-test similarity to evaluate the performance of scores.
@@ -348,13 +371,12 @@ def get_top_k_scores_for_bins(prediction_df:dask.dataframe, train_test_similarit
         print(f"Processing bin {i+1}/{len(train_test_similarity_bins)-1}")
         low = train_test_similarity_bins[i]
         high = train_test_similarity_bins[i+1]
-        _prediction_df = prediction_df.loc[(prediction_df['mean_max_train_test_sim'] >= low) & (prediction_df['mean_max_train_test_sim'] < high)]
-        outputs[f'({low:.2f}, {high:.2f})'] = get_top_k_scores(_prediction_df, k, remove_identical_inchikeys)
+        outputs[f'({low:.2f}, {high:.2f})'] = get_top_k_scores(prediction_df, k, remove_identical_inchikeys, tt_sim_lower=low, tt_sim_upper=high)
 
     return outputs
 
 
-def top_k_analysis(prediction_df: dd.DataFrame, k_list=[1], remove_identical_inchikeys: bool = False, save_ranks=True) -> dict:
+def top_k_analysis_old(prediction_df: dd.DataFrame, k_list=[1], remove_identical_inchikeys: bool = False, save_ranks=True) -> dict:
     """Get the rank of the most similar structure in the prediction_df for each spectrum.
     Optionally, excludes pairs with identical inchikeys simulating an analogue search setting.
     Always excludes pairs with identical spectrum ids.
@@ -429,14 +451,127 @@ def top_k_analysis(prediction_df: dd.DataFrame, k_list=[1], remove_identical_inc
 
     return results
 
-def top_k_analysis_for_bins(prediction_df: dd.DataFrame, train_test_similarity_bins:np.ndarray, k_list=[1], remove_identical_inchikeys: bool = False):
-    """Get the rank of the most similar structure in the prediction_df for each spectrum in each bin of the train-test similarity.
+def top_k_analysis(prediction_df: str, k_list=[1], remove_identical_inchikeys: bool = False, save_ranks=True, 
+                    tt_sim_lower:float=None, tt_sim_upper:float=None) -> dict:
+    """Get the rank of the most similar structure in the prediction_df for each spectrum.
     Optionally, excludes pairs with identical inchikeys simulating an analogue search setting.
     Always excludes pairs with identical spectrum ids.
 
     Parameters
     ----------
     prediction_df : dask.dataframe
+        DataFrame containing the predictions and ground truth similarities.
+    k_list : list, optional
+        List of k values to consider, by default [1]
+    remove_identical_inchikeys : bool, optional
+        If True, exclude pairs with identical inchikeys, by default False
+    save_ranks : bool, optional
+        If True, save the ranks for each spectrum, by default True
+    tt_sim_lower : float, optional
+        Lower bound for the train-test similarity, by default None
+    tt_sim_upper : float, optional
+        Upper bound for the train-test similarity, by default None
+        
+
+    Returns
+    -------
+    dict
+        Dictionary containing the mean and standard deviation of ranks for each value of k.
+    """
+    # If one bound is specified, the other must be specified as well
+    if tt_sim_lower is not None and tt_sim_upper is None:
+        raise ValueError("Both lower and upper bounds must be specified for the train-test similarity")
+    if tt_sim_upper is not None and tt_sim_lower is None:
+        raise ValueError("Both lower and upper bounds must be specified for the train-test similarity")
+
+    def calculate_rank(df, _k):
+        df['rank'] = da.arange(1, len(df) + 1)
+        # Get most similar inchikeys with ties
+        most_similar_inchikeys_with_ties = df.drop_duplicates(subset=['inchikey2']).set_index('inchikey2')['ground_truth_similarity'].nlargest(_k, keep='all')
+        # Get rows containing those inchikeys
+        best_pred_rank = df[df['inchikey2'].isin(most_similar_inchikeys_with_ties.index)]['rank']
+        if len(best_pred_rank) == 0:
+            return np.nan
+        best_pred_rank = np.nanmin(best_pred_rank)
+
+        return best_pred_rank
+    
+        
+    def caluclate_rank_pandas(df, _k):
+        if len(df) == 0:
+            return np.nan
+        _df = df.copy()
+        _df['rank'] = _df['predicted_similarity'].rank(method='dense', ascending=False)
+
+        if tt_sim_lower is not None and tt_sim_upper is not None:
+            _df = _df.loc[(_df['mean_max_train_test_sim'] >= tt_sim_lower) & (_df['mean_max_train_test_sim'] < tt_sim_upper)]
+
+        best_rank = _df.nlargest(_k, 'ground_truth_similarity', keep='all')['rank'].min()
+        return best_rank
+
+    ranks_dict_queue = {}
+    for p in tqdm(glob(prediction_df + '/spectrumid1=*')):
+        spec_id = _extract_spectrum_id(p)
+        ranks_dict_queue[spec_id] = {}
+
+        df = dd.read_parquet(p)
+        # Add ranks
+        # df = df.sort_values('predicted_similarity', ascending=False)
+
+        # if tt_sim_lower is not None and tt_sim_upper is not None:
+        #     df = df.loc[(df['mean_max_train_test_sim'] >= tt_sim_lower) & (df['mean_max_train_test_sim'] < tt_sim_upper)]
+
+        df = df.loc[spec_id != df['spectrumid2']]
+        if remove_identical_inchikeys:
+            df = df.loc[df['inchikey1'] != df['inchikey2']]
+
+        for k in k_list:
+            # ranks_dict_queue[spec_id][k] = delayed(calculate_rank)(df, k)
+            ranks_dict_queue[spec_id][k] = delayed(caluclate_rank_pandas)(df, k)
+
+    # Compute the results
+    keys = list(ranks_dict_queue.keys())
+    ranks_dict = dict()
+    keys_split = np.array_split(keys, len(keys)//5000 + 1)
+    for key_split in keys_split:
+        rd = dask.compute({k: ranks_dict_queue[k] for k in key_split})[0]
+        # print("HERE1", flush=True)
+        ranks_dict.update(rd)
+        # print("HERE2", flush=True)
+ 
+    # print("HERE3", flush=True)
+    # For each level of k, compute the mean and standard deviation of the ranks
+    results = {}
+    for k in k_list:
+        # print("HERE4", flush=True)
+        ranks = [ranks_dict[key][k] for key in keys]
+        ranks = np.array(ranks)
+        mean = np.nanmean(ranks)
+        median = np.nanmedian(ranks)
+        std = np.nanstd(ranks)
+
+        results[k] = {}
+        results[k]['median_top_rank']   = median
+        results[k]['mean_top_rank']     = mean
+        results[k]['std_top_rank']      = std
+        results[k]['all_ranks'] = dict()
+        # print("HERE5", flush=True)
+        if save_ranks:
+            for key in keys:
+                # print("HERE6", flush=True)
+                results[k]['all_ranks'][key] = ranks_dict[key][k]
+
+    # print("HERE7", flush=True)
+    return results
+
+def top_k_analysis_for_bins(prediction_df: str, train_test_similarity_bins:np.ndarray, k_list=[1], remove_identical_inchikeys: bool = False):
+    """Get the rank of the most similar structure in the prediction_df for each spectrum in each bin of the train-test similarity.
+    Optionally, excludes pairs with identical inchikeys simulating an analogue search setting.
+    Always excludes pairs with identical spectrum ids.
+
+    Parameters
+    ----------
+    prediction_df : str
         DataFrame containing the predictions and ground truth similarities.
     train_test_similarity_bins : np.ndarray
         Bins for the train-test similarity to evaluate the performance of scores.
@@ -453,11 +588,17 @@ def top_k_analysis_for_bins(prediction_df: dd.DataFrame, train_test_similarity_b
     outputs = {}
     for i in range(len(train_test_similarity_bins)-1):
         print(f"Begin bin {i} of {len(train_test_similarity_bins)-1}")
+        start_time = time()
         low = train_test_similarity_bins[i]
         high = train_test_similarity_bins[i+1]
-        _prediction_df = prediction_df.loc[(prediction_df['mean_max_train_test_sim'] >= low) & (prediction_df['mean_max_train_test_sim'] < high)]
+        # print("HERE0", flush=True)
          # Disable saving ranks for each prediciton to save memory, I/O, and computation time
-        outputs[f'({low:.2f}, {high:.2f})'] = top_k_analysis(_prediction_df, k_list, remove_identical_inchikeys, save_ranks=False)
+        outputs[f'({low:.2f}, {high:.2f})'] = top_k_analysis(prediction_df, k_list, remove_identical_inchikeys, save_ranks=False,
+                                                              tt_sim_lower=low, tt_sim_upper=high)
+        print("Time taken:", time() - start_time)
+        # print("HERE8", flush=True)
+    
+    # print("HERE9", flush=True)
 
     return outputs
 

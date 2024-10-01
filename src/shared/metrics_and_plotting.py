@@ -1,9 +1,12 @@
 import argparse
 from pathlib import Path
 import os
+import sys
+from time import time
 
 from matplotlib import cm
 import pandas as pd
+import dask
 import dask.dataframe as dd
 import dask.array as da
 from dask.distributed import LocalCluster
@@ -12,6 +15,7 @@ import matplotlib.pyplot as plt
 import pickle
 import gc
 import seaborn as sns
+import shutil
 
 TT_SIM_BINS = np.linspace(0.4,1.0, 13)
 PW_SIM_BINS = np.linspace(0.,1.0, 11)
@@ -24,9 +28,11 @@ from utils import train_test_similarity_dependent_losses, \
                     pairwise_train_test_dependent_heatmap, \
                     roc_curve, \
                     top_k_analysis, \
+                    top_k_analysis_for_bins, \
                     get_top_k_scores, \
                     get_top_k_scores_for_bins, \
-                    pr_curve
+                    pr_curve, \
+                    get_top_k_scores_indexed
 
 plt.rcParams.update({
     "text.usetex": False,
@@ -115,7 +121,14 @@ def main():
     parser.add_argument("--save_dir", type=str, help="Path to save the output")
     parser.add_argument("--save_dir_insert", type=str, help="Appended to save dir, to help organize test sets if needed", default="")
     parser.add_argument("--n_jobs", type=int, help="Number of jobs to run in parallel", default=1)
+    parser.add_argument("--skip_titrated_rank_metrics", help="Skip train-test similarity dependent ranking metrics.", action="store_true")
     args = parser.parse_args()
+
+    if os.path.isdir('/scratch'):
+        dask.config.set({'temporary-directory': '/scratch'})
+    else:
+        # Use default
+        pass
 
     prediction_path = Path(args.prediction_path)
 
@@ -131,7 +144,33 @@ def main():
 
     presampled_pairs = dd.read_parquet(prediction_path)
 
-    print(presampled_pairs.head(10))
+    def _write_individual_files():
+        reversed_df = presampled_pairs.rename(columns={'spectrumid1': 'spectrumid2', 'spectrumid2': 'spectrumid1',
+                                                'inchikey1': 'inchikey2', 'inchikey2': 'inchikey1'})
+        symmetric_df = dd.concat([presampled_pairs, reversed_df], axis=0)
+
+        symmetric_df_path = os.path.join(metric_dir, "grouped_predictions.parquet")
+        # Remove if it exists
+        if os.path.exists(symmetric_df_path):
+            # Empty the directory
+            shutil.rmtree(symmetric_df_path)
+
+        # Shuffle is slow but forces one file
+        symmetric_df.shuffle(on=['spectrumid1']).to_parquet(symmetric_df_path, partition_on=['spectrumid1'])
+
+    def _write_indexed_files():
+        reversed_df = presampled_pairs.rename(columns={'spectrumid1': 'spectrumid2', 'spectrumid2': 'spectrumid1',
+                                                'inchikey1': 'inchikey2', 'inchikey2': 'inchikey1'})
+        symmetric_df = dd.concat([presampled_pairs, reversed_df], axis=0)
+        symmetric_df['_spectrumid1'] = symmetric_df['spectrumid1']#.astype('category').cat.as_ordered()
+        symmetric_df_path = os.path.join(metric_dir, "symmetric_predictions.parquet")
+        symmetric_df.set_index('_spectrumid1').repartition(partition_size='100MB').to_parquet(symmetric_df_path)
+
+    # Individual parquet file approach
+    start_time = time()
+    # _write_individual_files()
+    print(f"Writing Indexed Files took {time() - start_time:.2f} seconds")
+    symmetric_df_path = os.path.join(metric_dir, "grouped_predictions.parquet")
 
     overall_rmse = da.sqrt(da.mean(da.square(presampled_pairs['error']))).compute()
     print("Overall RMSE (from evaluate()):", overall_rmse)
@@ -147,7 +186,10 @@ def main():
 
     # Get Top K Tanimoto Similarities (including identical inchikeys)
     print("Creating Top K Tanimoto Score Analysis Including Identical InChIKeys", flush=True)
-    top_scores = get_top_k_scores(presampled_pairs, k=10)
+    start_time = time()
+    top_scores = get_top_k_scores(symmetric_df_path, k=10)
+    # top_scores = get_top_k_scores_indexed(symetric_df_indexed, k=10)
+    print(f"Top K Tanimoto Score Analysis took {time() - start_time:.2f} seconds")
     print("top_scores_averages:", [f"{x:.4f}" for x in top_scores['top_scores_averages']])
     print("optimal_scores_averages:", [f"{x:.4f}" for x in top_scores['optimal_scores_averages']])
     print("difference_averages:", [f"{x:.4f}" for x in top_scores['difference_averages']])
@@ -165,7 +207,10 @@ def main():
     fig.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_distance_line.png'))
 
     print("Calculating Top K Tanimoto Scores (excluding identical inchikeys)", flush=True)
-    top_scores_no_identical = get_top_k_scores(presampled_pairs, k=10, remove_identical_inchikeys=True)
+    start_time = time()
+    top_scores_no_identical = get_top_k_scores(symmetric_df_path, k=10, remove_identical_inchikeys=True)
+    # top_scores_no_identical = get_top_k_scores_indexed(symetric_df_indexed, k=10, remove_identical_inchikeys=True)
+    print(f"Top K Tanimoto Score Analysis took {time() - start_time:.2f} seconds")
     print("top_scores_averages:", [f"{x:.4f}" for x in top_scores_no_identical['top_scores_averages']])
     print("optimal_scores_averages:", [f"{x:.4f}" for x in top_scores_no_identical['optimal_scores_averages']])
     print("difference_averages:", [f"{x:.4f}" for x in top_scores_no_identical['difference_averages']])
@@ -183,45 +228,46 @@ def main():
     fig.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_no_identical_distance_line.png'))
 
     # Binned Top-K Scores
-    print("Creating Binned Top K Tanimoto Scores", flush=True)
-    top_scores_binned_w_identical = get_top_k_scores_for_bins(presampled_pairs, TT_SIM_BINS, k=10, remove_identical_inchikeys=False)
-    top_scores_binned_no_identical = get_top_k_scores_for_bins(presampled_pairs, TT_SIM_BINS, k=10, remove_identical_inchikeys=True)
-    # Dumpy to pikle
-    output_path = os.path.join(metric_dir, "top_k_scores_binned_w_identical.pkl")
-    pickle.dump(top_scores_binned_w_identical, open(output_path, "wb"))
-    output_path = os.path.join(metric_dir, "top_k_scores_binned_no_identical.pkl")
-    pickle.dump(top_scores_binned_no_identical, open(output_path, "wb"))
-    # Plot Mean Distance to Optimal Tanimoto Scores
-    cmap = cm.get_cmap('viridis', len(top_scores_binned_w_identical.keys()))
-    plt.figure(figsize=(10,7))
-    for idx, k in enumerate(top_scores_binned_w_identical.keys()):
-        color = cmap(idx / len(top_scores_binned_w_identical.keys()))
-        data = np.array(top_scores_binned_w_identical[k]['optimal_scores_averages']) - np.array(top_scores_binned_w_identical[k]['top_scores_averages'])
-        plt.plot(np.arange(len(data)), data, '--o', label=k, color=color, markersize=8)
+    if not args.skip_titrated_rank_metrics:
+        print("Creating Binned Top K Tanimoto Scores", flush=True)
+        top_scores_binned_w_identical = get_top_k_scores_for_bins(symmetric_df_path, TT_SIM_BINS, k=10, remove_identical_inchikeys=False)
+        top_scores_binned_no_identical = get_top_k_scores_for_bins(symmetric_df_path, TT_SIM_BINS, k=10, remove_identical_inchikeys=True)
+        # Dump to pikle
+        output_path = os.path.join(metric_dir, "top_k_scores_binned_w_identical.pkl")
+        pickle.dump(top_scores_binned_w_identical, open(output_path, "wb"))
+        output_path = os.path.join(metric_dir, "top_k_scores_binned_no_identical.pkl")
+        pickle.dump(top_scores_binned_no_identical, open(output_path, "wb"))
+        # Plot Mean Distance to Optimal Tanimoto Scores
+        cmap = cm.get_cmap('viridis', len(top_scores_binned_w_identical.keys()))
+        plt.figure(figsize=(10,7))
+        for idx, k in enumerate(top_scores_binned_w_identical.keys()):
+            color = cmap(idx / len(top_scores_binned_w_identical.keys()))
+            data = np.array(top_scores_binned_w_identical[k]['optimal_scores_averages']) - np.array(top_scores_binned_w_identical[k]['top_scores_averages'])
+            plt.plot(np.arange(len(data)), data, '--o', label=k, color=color, markersize=8)
 
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', title='Train-Test Similarity')
-    plt.ylabel("Mean Distance to Optimal Tanimoto Score")
-    plt.xlabel("Prediction Rank")
-    plt.xticks(np.arange(len(data)), np.arange(1, len(data) + 1))
-    plt.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_binned_w_identical.png'), bbox_inches="tight")
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', title='Train-Test Similarity')
+        plt.ylabel("Mean Distance to Optimal Tanimoto Score")
+        plt.xlabel("Prediction Rank")
+        plt.xticks(np.arange(len(data)), np.arange(1, len(data) + 1))
+        plt.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_binned_w_identical.png'), bbox_inches="tight")
 
-    plt.figure(figsize=(10,7))
-    for idx, k in enumerate(top_scores_binned_no_identical.keys()):
-        color = cmap(idx / len(top_scores_binned_no_identical.keys()))
-        data = np.array(top_scores_binned_no_identical[k]['optimal_scores_averages']) - np.array(top_scores_binned_no_identical[k]['top_scores_averages'])
-        plt.plot(np.arange(len(data)), data, '--o', label=k, color=color, markersize=8)
+        plt.figure(figsize=(10,7))
+        for idx, k in enumerate(top_scores_binned_no_identical.keys()):
+            color = cmap(idx / len(top_scores_binned_no_identical.keys()))
+            data = np.array(top_scores_binned_no_identical[k]['optimal_scores_averages']) - np.array(top_scores_binned_no_identical[k]['top_scores_averages'])
+            plt.plot(np.arange(len(data)), data, '--o', label=k, color=color, markersize=8)
 
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', title='Train-Test Similarity')
-    plt.ylabel("Mean Distance to Optimal Tanimoto Score")
-    plt.xlabel("Prediction Rank")
-    plt.xticks(np.arange(len(data)), np.arange(1, len(data) + 1))
-    plt.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_binned_no_identical.png'), bbox_inches="tight")
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', title='Train-Test Similarity')
+        plt.ylabel("Mean Distance to Optimal Tanimoto Score")
+        plt.xlabel("Prediction Rank")
+        plt.xticks(np.arange(len(data)), np.arange(1, len(data) + 1))
+        plt.savefig(os.path.join(metric_dir, 'top_k_tanimoto_scores_binned_no_identical.png'), bbox_inches="tight")
 
     # Calculate Top k Analysis
     print("Creating Top k Analysis", flush=True)
-    k_lst = [1,3,10]
-    top_k_metrics = top_k_analysis(presampled_pairs, k_list=k_lst, remove_identical_inchikeys=True)
-    top_k_metrics_w_identical = top_k_analysis(presampled_pairs, k_list=k_lst, remove_identical_inchikeys=False)
+    k_lst = np.arange(1, 11)
+    top_k_metrics = top_k_analysis(symmetric_df_path, k_list=k_lst, remove_identical_inchikeys=True)
+    top_k_metrics_w_identical = top_k_analysis(symmetric_df_path, k_list=k_lst, remove_identical_inchikeys=False)
     # Each dict contains 'mean_top_rank' and 'std_top_rank'
     top_k_path = os.path.join(metric_dir, "top_k_metrics.pkl")
     pickle.dump(top_k_metrics, open(top_k_path, "wb"))
@@ -262,69 +308,27 @@ def main():
         labels.append(f'k={k} Non-Identical InChI')
         labels.append(f'k={k} Identical InChI')
 
-    plt.violinplot(all_ranks, showmedians=True)
+    all_ranks_no_nan = [np.array(x)[~np.isnan(x)] for x in all_ranks]
+    plt.violinplot(all_ranks_no_nan, showmedians=True)
     plt.xticks(np.arange(1, len(labels) + 1), labels, rotation=45, ha="right")
     plt.ylabel("Top Rank")
     plt.title("Predicted Rank of Highest Similarity\nStructure for Various k")
     plt.tight_layout()
     plt.savefig(os.path.join(metric_dir, 'top_k_analysis_violin.png'))
 
-
-    # Calculate ROC Curve
-    print("Creating ROC Curve Including Identical InChiKeys", flush=True)
-    roc_metrics_w_identical = roc_curve(presampled_pairs, np.linspace(1.0,0.0, 41), exclude_identical_inchikeys=False)
-    roc_path = os.path.join(metric_dir, "roc_metrics_w_identical.pkl")
-    pickle.dump(roc_metrics_w_identical, open(roc_path, "wb"))
-    plt.figure(figsize=(6, 6))
-    plt.plot(roc_metrics_w_identical["fpr"], roc_metrics_w_identical["tpr"])
-    plt.plot([0, 1], [0, 1], 'k--')
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title(f"ROC Curve (AUC={roc_metrics_w_identical['auc']:.2f})")
-    plt.savefig(os.path.join(metric_dir, 'roc_curve.png'))
-
-    # Calculate ROC Curve Excluding Identical InChiKeys
-    print("Creating ROC Curve Excluding Identical InChiKeys", flush=True)
-    # 250_000 ppm would mean no more than a 25% mass delta
-    roc_metrics_no_identical = roc_curve(presampled_pairs, np.linspace(1.0,0.0, 41), precursor_ppm_diff=250_000, exclude_identical_inchikeys=True, positive_threshold=0.6)
-    roc_path = os.path.join(metric_dir, "roc_metrics_no_identical.pkl")
-    pickle.dump(roc_metrics_no_identical, open(roc_path, "wb"))
-    plt.figure(figsize=(6, 6))
-    plt.plot(roc_metrics_no_identical["fpr"], roc_metrics_no_identical["tpr"])
-    plt.plot([0, 1], [0, 1], 'k--')
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title(f"ROC Curve (AUC={roc_metrics_no_identical['auc']:.2f})")
-    plt.savefig(os.path.join(metric_dir, 'roc_curve_no_identical.png'))
-
-    # Calculate PR Curve Including Identical InChiKeys
-    print("Creating PR Curve Including Identical InChiKeys", flush=True)
-    pr_metrics_w_identical = pr_curve(presampled_pairs, np.linspace(1.0,0.0, 41), exclude_identical_inchikeys=False)
-    pr_path = os.path.join(metric_dir, "pr_metrics.pkl")
-    pickle.dump(pr_metrics_w_identical, open(pr_path, "wb"))
-    plt.figure(figsize=(6, 6))
-    plt.plot(pr_metrics_w_identical["recall"], pr_metrics_w_identical["precision"])
-    plt.xlim(0, 1)
-    plt.ylim(0, 1)
-    plt.xlabel("Recall")
-    plt.ylabel("Precision")
-    plt.title(f"PR Curve (AUC={pr_metrics_w_identical['auc']:.2f})")
-    plt.savefig(os.path.join(metric_dir, 'pr_curve.png'))
-
-    # Calculate PR Curve Excluding Identical InChiKeys
-    print("Creating PR Curve Excluding Identical InChiKeys", flush=True)
-    pr_metrics_no_identical = pr_curve(presampled_pairs, np.linspace(1.0,0.0, 41), precursor_ppm_diff=250_000, exclude_identical_inchikeys=True, positive_threshold=0.6)
-    pr_path = os.path.join(metric_dir, "pr_metrics_no_identical.pkl")
-    pickle.dump(pr_metrics_no_identical, open(pr_path, "wb"))
-    plt.figure(figsize=(6, 6))
-    plt.xlim(0, 1)
-    plt.ylim(0, 1)
-    plt.plot(pr_metrics_no_identical["recall"], pr_metrics_no_identical["precision"])
-    plt.xlabel("Recall")
-    plt.ylabel("Precision")
-    plt.title(f"PR Curve (AUC={pr_metrics_no_identical['auc']:.2f})")
-    plt.savefig(os.path.join(metric_dir, 'pr_curve_no_identical.png'))
-
+    # Binned Top K Analysis
+    if not args.skip_titrated_rank_metrics:
+        k_lst = np.arange(1, 11)
+        print("Creating Binned Top K Analysis", flush=True)
+        top_k_metrics_binned_w_identical = top_k_analysis_for_bins(symmetric_df_path, TT_SIM_BINS, k_list=k_lst, remove_identical_inchikeys=False)
+        top_k_metrics_binned_no_identical = top_k_analysis_for_bins(symmetric_df_path, TT_SIM_BINS, k_list=k_lst, remove_identical_inchikeys=True)
+        # Dump to pickle
+        print("top_k_metrics_binned_w_identical", flush=True)
+        print(top_k_metrics_binned_w_identical, flush=True)
+        output_path = os.path.join(metric_dir, "top_k_metrics_binned_w_identical.pkl")
+        pickle.dump(top_k_metrics_binned_w_identical, open(output_path, "wb"))
+        output_path = os.path.join(metric_dir, "top_k_metrics_binned_no_identical.pkl")
+        pickle.dump(top_k_metrics_binned_no_identical, open(output_path, "wb"))
 
     # Train-Test Similarity Dependent Losses Aggregated (rmse)
     print("Creating Train-Test Similarity Dependent Losses Aggregated Plot", flush=True)
