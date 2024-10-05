@@ -227,6 +227,7 @@ dependencies:
   - zlib=1.2.13
   - zlib-ng=2.0.7
   - zstd=1.5.6
+  - dask=2024.8.0
   - pip:
       - absl-py==2.1.0
       - appdirs==1.4.4
@@ -312,3 +313,4 @@ dependencies:
       - urllib3==2.1.0
       - werkzeug==3.0.1
       - wrapt==1.14.1
+      - pyarrow==15.0
