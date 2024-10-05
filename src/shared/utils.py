@@ -197,16 +197,28 @@ def get_top_k_scores(prediction_df:str, k=1, remove_identical_inchikeys:bool=Fal
     if tt_sim_upper is not None and tt_sim_lower is None:
         raise ValueError("Both lower and upper bounds must be specified for the train-test similarity")
 
-    def calculate_top_k_scores(df):
-        h = df.nlargest(k, columns='predicted_similarity', keep='all').iloc[:k]['ground_truth_similarity'].values
+    def calculate_top_k_scores(df:dd.DataFrame):
+        if not isinstance(df, pd.DataFrame):
+            _df = df.compute()
+        else:
+            _df = df.copy()
+        if _df.empty:
+            return np.ones(k) * np.nan
+        h = _df.nlargest(k, 'predicted_similarity', keep='all').iloc[:k]['ground_truth_similarity'].values
         # Right pad with np.nan if there are less than k values
         return np.pad(h, (0, k - len(h)), constant_values=np.nan)
 
     # Get top-k scores within groups
     # top_k_scores = grouped.apply(calculate_top_k_scores, meta=('top_k_scores', 'f8'))
 
-    def calculate_optimal(df):
-        h = df['ground_truth_similarity'].nlargest(k, keep='all').iloc[:k].values
+    def calculate_optimal(df:dd.DataFrame):
+        if not isinstance(df, pd.DataFrame):
+            _df = df.compute()
+        else:
+            _df = df.copy()
+        if _df.empty:
+            return np.ones(k) * np.nan
+        h = _df['ground_truth_similarity'].nlargest(k, keep='all').iloc[:k].values
         # Right pad with np.nan if there are less than k values
         return np.pad(h, (0, k - len(h)), constant_values=np.nan)
 
@@ -230,11 +242,12 @@ def get_top_k_scores(prediction_df:str, k=1, remove_identical_inchikeys:bool=Fal
     top_k_scores = {}
     optimal_scores = {}
     # Chunk the computation to avoid a large graph (will overwhelm scheduler)
+
     keys = list(top_k_scores_queue.keys())
     print(f"Executing Tasks for {len(keys)} spectra")
     keys_split = np.array_split(keys, len(keys)//5000 + 1)
     for key_split in keys_split:
-        top_k_scores, optimal_scores = dask.compute({k: top_k_scores_queue[k] for k in key_split}, {k: optimal_scores_queue[k] for k in key_split})
+        top_k_scores, optimal_scores = dask.compute({k: top_k_scores_queue[k] for k in key_split}, {k: optimal_scores_queue[k] for k in key_split}, rerun_exceptions_locally=True)
         # Add the chunk to the dictionary
         top_k_scores.update(top_k_scores)
         optimal_scores.update(optimal_scores)
@@ -500,7 +513,10 @@ def top_k_analysis(prediction_df: str, k_list=[1], remove_identical_inchikeys: b
     def caluclate_rank_pandas(df, _k):
         if len(df) == 0:
             return np.nan
-        _df = df.copy()
+        if isinstance(df, dd.DataFrame):
+            _df = df.compute()
+        else:
+            _df = df.copy()
         _df['rank'] = _df['predicted_similarity'].rank(method='dense', ascending=False)
 
         if tt_sim_lower is not None and tt_sim_upper is not None:

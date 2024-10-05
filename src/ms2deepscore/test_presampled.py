@@ -159,7 +159,7 @@ def main():
     
     # Initalize dask cluster
     # cluster = LocalCluster(n_workers=4, threads_per_worker=2)
-    cluster = LocalCluster(n_workers=int(args.n_jobs/2), threads_per_worker=2, memory_limit='7.5GB')
+    cluster = LocalCluster(n_workers=int(args.n_jobs), threads_per_worker=1, memory_limit='16GB')
     client = cluster.get_client()
     # Print out the dashboard link
     print(f"Dask Dashboard: {client.dashboard_link}")
@@ -201,7 +201,7 @@ def main():
 
         print("Loading Presampled Pairs", flush=True)
         presampled_pairs_path = Path(args.presampled_pairs_path)
-        presampled_pairs = dd.read_parquet(presampled_pairs_path)
+        presampled_pairs = dd.read_parquet(presampled_pairs_path).repartition(partition_size="100MB")
         print("\tDone.", flush=True)
                 
         metric_dir = os.path.join(args.save_dir, model_name.stem, presampled_pairs_path.stem, args.save_dir_insert)
@@ -260,8 +260,8 @@ def main():
 
             # Save the dataframe to disk
             print("Saving Dataframe to Disk...", flush=True)
-            with dask.config.set(num_workers=min(os.cpu_count()-4, 1)):
-                presampled_pairs.repartition(partition_size='100MB').to_parquet(dask_output_path)
+
+            presampled_pairs.to_parquet(dask_output_path)
             print("\tDone.", flush=True)
 
 

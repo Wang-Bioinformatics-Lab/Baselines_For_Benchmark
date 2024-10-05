@@ -168,7 +168,7 @@ def main():
 
     # Individual parquet file approach
     start_time = time()
-    # _write_individual_files()
+    _write_individual_files()
     print(f"Writing Indexed Files took {time() - start_time:.2f} seconds")
     symmetric_df_path = os.path.join(metric_dir, "grouped_predictions.parquet")
 
