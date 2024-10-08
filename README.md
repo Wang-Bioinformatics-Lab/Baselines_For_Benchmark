@@ -20,6 +20,6 @@ Performs inference, and runs evaluations script over predictions.
 
 Please note that this script has an n_jobs parameters to modulate memory and cpu usage.
 ```
-cd scripts/ms2deepscore/test/fresh_dataset/
-./all_filters.sh
+cd scripts/ms2deepscore/test/fresh_dataset/ 
+./example.sh
 ```
