@@ -8,16 +8,28 @@ BIN_DIR="../../../../src/ms2deepscore/"
 
 DATA_DIR="../../data/$FOLDER/"
 
-# Get first arg as model name e.g., model_30_08_2024_14_27_50.hdf5
-if [ "$#" -eq 1 ]; then
-    MODEL_PATH="./$FOLDER/$1"
-fi
+echo "Using model: $MODEL_PATH"
 
 conda activate "$BIN_DIR/../shared/conda_env"
 
 echo "Performing Inference for MS2DeepScore with a basic split, filtered by pairs"
 
 cd $BIN_DIR
+
+# Get first arg as model name e.g., model_30_08_2024_14_27_50.hdf5
+if [ "$#" -eq 1 ]; then
+    MODEL_PATH="./$FOLDER/$1"
+else
+    echo "No model file provided. Searching for a model file in the folder: $FOLDER"
+    # Get the first file that starts with 'model_' and ends with '.hdf5'
+    MODEL_PATH=$(find "$FOLDER" -type f -name 'model_*.hdf5' | head -n 1)
+    
+    if [ -z "$MODEL_PATH" ]; then
+        echo "No model file found."
+        exit 1
+    fi
+    echo "Using model: $MODEL_PATH"
+fi
 
 # Expect n * 16 GB of memory usage
 python3 test_presampled.py --test_path $DATA_DIR"/processed/data/ALL_GNPS_positive_test_split.pickle" \
