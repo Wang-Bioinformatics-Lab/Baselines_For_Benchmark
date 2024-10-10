@@ -43,6 +43,7 @@ def main():
     parser = argparse.ArgumentParser(description='Train MS2DeepScore on the original data')
     parser.add_argument('--train_path', type=str, help='Path to the training data')
     parser.add_argument('--val_path', type=str, help='Path to the validation data')
+    parser.add_argument('--pretrained_model_path', type=str, help='Path to the pretrained model')
     parser.add_argument('--train_pairs_path', type=str, help='Path to the pairs', default=None)
     parser.add_argument('--val_pairs_path', type=str, help='Path to the pairs', default=None)
     parser.add_argument('--tanimoto_path', type=str, help='Path to the tanimoto scores')
@@ -51,6 +52,7 @@ def main():
     parser.add_argument('--embedding_dim', type=int, help='Embedding dimension', default=200)
     parser.add_argument('--use_cnn_model', action='store_true', help='Use the CNN model instead of the dense model')
     parser.add_argument('--gpu', type=int, help='Which GPU to use', default=0)
+    parser.add_argument('--test_sim_matrix', type=str, help="Test set similarity matrix. Used to remove common inchikeys")
     args = parser.parse_args()
         
     if not os.path.isdir(args.save_dir):
@@ -73,25 +75,29 @@ def main():
         try:
             # TODO add scratch path as an argument
             if args.train_pairs_path is not None:
-                # Check the file size
-                file_size = os.path.getsize(args.train_pairs_path)
+                if args.train_pairs_path.endswith('hdf5'):
                 
-                # Check available space in the destination directory
-                statvfs = os.statvfs('/')
-                available_space = statvfs.f_frsize * statvfs.f_bavail
-                
-                if file_size > available_space:
-                    raise RuntimeError("Not enough space on the filesystem to copy the file.")
-                
-                # Create a temporary file in the root directory
-                _, file_extension = os.path.splitext(args.train_pairs_path)
-                with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
-                    temp_pair_path = temp_file.name
+                    # Check the file size
+                    file_size = os.path.getsize(args.train_pairs_path)
                     
-                shutil.copyfile(args.train_pairs_path, temp_pair_path)
-                
-                train_pair_path = temp_pair_path
-                logging.info("Successfully copied train pairs to scratch")
+                    # Check available space in the destination directory
+                    statvfs = os.statvfs('/')
+                    available_space = statvfs.f_frsize * statvfs.f_bavail
+                    
+                    if file_size > available_space:
+                        raise RuntimeError("Not enough space on the filesystem to copy the file.")
+                    
+                    # Create a temporary file in the root directory
+                    _, file_extension = os.path.splitext(args.train_pairs_path)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
+                        temp_pair_path = temp_file.name
+                        
+                    shutil.copyfile(args.train_pairs_path, temp_pair_path)
+                    
+                    train_pair_path = temp_pair_path
+                    logging.info("Successfully copied train pairs to scratch")
+                else:
+                    train_pair_path = args.train_pairs_path
         except Exception as e:
             logging.info("Failed to copy pairs to scratch")
             print(e, flush=True)
@@ -119,9 +125,14 @@ def main():
         tanimoto_df = pd.read_csv(args.tanimoto_path, index_col=0)
         logging.info("\tDone.")
         
+        
+        logging.info("Loading model...")
+        model = load_model(args.pretrained_model_path)
+        spectrum_binner = model.spectrum_binner
+        logging.info("\tDone.")
+        
         logging.info("Binning Spectra...")
-        spectrum_binner = SpectrumBinner(10000, mz_min=10.0, mz_max=1000.0, peak_scaling=0.5, allowed_missing_percentage=100.0)
-        binned_spectrums_training = spectrum_binner.fit_transform(spectrums_training)
+        binned_spectrums_training = spectrum_binner.transform(spectrums_training)
         binned_spectrums_val = spectrum_binner.transform(spectrums_val)
         logging.info("\tDone.")
 
@@ -144,11 +155,21 @@ def main():
         else:
             # Using the given pairs, we can create a generator that only uses these pairs
             if train_pair_path.endswith('feather'):
+                test_sim_matrix = pd.read_csv(args.test_sim_matrix, index_col=0)
+                assert set(test_sim_matrix.index) == set(test_sim_matrix.columns)
+                test_inchis = set(test_sim_matrix.columns)
+                del test_sim_matrix
+                
                 train_pairs = pd.read_feather(train_pair_path)
+                start_len = len(train_pairs)
+                train_pairs = train_pairs.loc[~((train_pairs['inchikey_1'].isin(test_inchis)) | (train_pairs['inchikey_2'].isin(test_inchis)))]
+                logging.info("Removed %i pairs that had a structure in the test set.", (start_len - len(train_pairs)))
+                
                 # Print all cols and dtypes
                 for col in train_pairs.columns:
                     logging.info('%s: %s', col, train_pairs[col].dtype)
             elif train_pair_path.endswith('hdf5'):
+                raise NotImplementedError()
                 train_pairs = pd.HDFStore(train_pair_path, 'r')
             
             selected_compound_pairs_train = SelectedCompoundPairs(train_pairs, shuffle=True, same_prob_bins=same_prob_bins)
@@ -160,16 +181,6 @@ def main():
             )
             del selected_compound_pairs_train, binned_spectrums_training
             gc.collect()
-            # training_generator =  tf.data.Dataset.from_generator(DataGeneratorCherrypickedInChi, 
-            #                                                      args=(binned_spectrums_training, selected_compound_pairs_train, 
-            #                                                            spectrum_binner, training_inchikeys, same_prob_bins, 2, 10, 0.01),
-            #                                                   output_signature=(
-            #                                                       tf.TensorSpec(shape=(None, dimension), dtype=tf.float32),
-            #                                                       tf.TensorSpec(shape=(None, dimension), dtype=tf.float32),
-            #                                                       tf.TensorSpec(shape=(None,), dtype=tf.float32)
-            #                                                   )
-            #                                                  ).prefetch(tf.data.AUTOTUNE)
-
 
         if args.val_pairs_path is None:
             validation_generator = DataGeneratorAllInchikeys(
@@ -179,9 +190,11 @@ def main():
             del binned_spectrums_val
             gc.collect()
         else:
-            if args.val_pairs_path.endswith('feather'):
+            if args.val_pairs_path.endswith('feather'):               
                 val_pairs = pd.read_feather(args.val_pairs_path)
+                
             elif args.train_pairs_path.endswith('hdf5'):
+                raise NotImplementedError()
                 val_pairs = pd.HDFStore(args.val_pairs_path, 'r')
             
             selected_compound_pairs_val  = SelectedCompoundPairs(val_pairs, shuffle=False, same_prob_bins=same_prob_bins)
@@ -220,7 +233,7 @@ def main():
                     metrics=["mae", tf.keras.metrics.RootMeanSquaredError()])
 
         # Save best model and include earlystopping
-        earlystopper_scoring_net = EarlyStopping(monitor='val_loss', mode="min", patience=10, verbose=1, restore_best_weights=True)
+        earlystopper_scoring_net = EarlyStopping(monitor='val_loss', mode="min", patience=10, verbose=1, start_from_epoch=20, restore_best_weights=True)
 
         history = model.model.fit(training_generator, validation_data=validation_generator,
                                 epochs=150, verbose=1, callbacks=[earlystopper_scoring_net])
