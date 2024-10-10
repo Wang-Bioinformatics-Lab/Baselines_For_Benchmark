@@ -316,3 +316,4 @@ dependencies:
       - dask==2024.8.0
       - dask[distributed]
       - dask-expr
+      - bokeh>=3.0
